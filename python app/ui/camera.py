@@ -5,10 +5,10 @@ from kivy.uix.label import Label
 
 class CameraScreen(Screen):
     def on_enter(self):
-        layout = BoxLayout(orientation="vertical")
+        layout = BoxLayout(orientation="vertical", padding=50, spacing=20)
 
         preview = Label(text="[ Camera Preview ]", font_size=24)
-        capture_btn = Button(text="Capture")
+        capture_btn = Button(text="Capture", size_hint=(.5, .4), pos_hint={"center_x": 0.5, "center_y": .5})
 
         capture_btn.bind(on_press=self.capture)
 

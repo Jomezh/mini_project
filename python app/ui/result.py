@@ -5,10 +5,10 @@ from kivy.uix.button import Button
 
 class ResultScreen(Screen):
     def on_enter(self):
-        layout = BoxLayout(orientation="vertical")
+        layout = BoxLayout(orientation="vertical", padding=50, spacing=20)
 
         result = Label(text="Result: Fresh", font_size=28)
-        again = Button(text="Scan Again")
+        again = Button(text="Scan Again", size_hint=(.5, .4), pos_hint={"center_x": 0.5, "center_y": .5})
 
         again.bind(on_press=lambda x: self.go_home())
 

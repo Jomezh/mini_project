@@ -1,0 +1,14 @@
+<Button>:
+    markup: True
+    spacing: 10
+    background_normal: ""
+    background_down: ""
+    background_color: 0, 0, 0, 0
+    canvas.before:
+        Color:
+            rgba: (1,0,0,1) if self.text == '[b]Power\n OFF[/b]' else (.5, .5, .5, 1)
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [15] if self.text == '[b]Power\n OFF[/b]' else [30]
+
