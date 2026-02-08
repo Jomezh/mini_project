@@ -2,6 +2,9 @@ from kivy.uix.screenmanager import Screen
 from kivy.uix.button import Button
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
+from control.capture_flow import start_capture
+from utils.state import AppState
+
 
 class CameraScreen(Screen):
     def on_enter(self):
@@ -19,4 +22,5 @@ class CameraScreen(Screen):
         self.add_widget(layout)
 
     def capture(self, instance):
-        self.manager.current = "loading"
+        start_capture()
+        self.manager.current = AppState.LOADING.value

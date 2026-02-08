@@ -3,6 +3,9 @@ from kivy.uix.screenmanager import Screen
 from kivy.uix.button import Button
 from kivy.uix.boxlayout import BoxLayout
 from kivy.lang import Builder
+from hardware.power import shutdown
+from utils.state import AppState
+
 
 import os
 
@@ -18,7 +21,7 @@ class HomeScreen(Screen):
         shutdown_btn = Button(text='[b]Power\n OFF[/b]', size_hint=(.125, .125), pos_hint={"center_x": 0.90, "center_y": 0.75}, markup=True)
         
         start_btn.bind(on_press=self.start)
-        shutdown_btn.bind(on_press=lambda x: os.system("sudo shutdown now"))
+        shutdown_btn.bind(on_press=lambda x: shutdown())
 
         layout.add_widget(title)
         layout.add_widget(start_btn)
@@ -28,9 +31,7 @@ class HomeScreen(Screen):
         self.add_widget(layout)
 
     def start(self, instance):
-        self.manager.current = "camera"
+        self.manager.current = AppState.CAMERA.value
 
-    def shutdown(self, instance):
-        os.system("sudo shutdown now")
-
+    
 
