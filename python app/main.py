@@ -1,5 +1,10 @@
 import os
 import sys
+
+# Force SDL to use correct display
+os.environ['SDL_FBDEV'] = '/dev/fb1'  # Try /dev/fb0 if this doesn't work
+os.environ['SDL_VIDEODRIVER'] = 'fbcon'
+
 from kivy.app import App
 from kivy.uix.screenmanager import ScreenManager, FadeTransition
 from kivy.core.window import Window
@@ -33,43 +38,60 @@ class MiniKApp(App):
         self.device_manager = DeviceManager()
         self.controller = None
         self.screen_manager = None
-        
+
     def build(self):
         self.title = "MiniK - VOC Detection System"
         
+        print("=" * 50)
+        print("Building MiniK App...")
+
         # Create screen manager
         self.screen_manager = ScreenManager(transition=FadeTransition())
-        
+
         # Add all screens
+        print("Adding screens...")
         self.screen_manager.add_widget(PairingScreen(name='pairing'))
+        print("  - Added pairing screen")
         self.screen_manager.add_widget(HomeScreen(name='home'))
+        print("  - Added home screen")
         self.screen_manager.add_widget(CaptureScreen(name='capture'))
+        print("  - Added capture screen")
         self.screen_manager.add_widget(AnalyzingScreen(name='analyzing'))
+        print("  - Added analyzing screen")
         self.screen_manager.add_widget(ReadingSensorsScreen(name='reading'))
+        print("  - Added reading screen")
         self.screen_manager.add_widget(ResultScreen(name='result'))
-        
+        print("  - Added result screen")
+
         # Initialize controller
         self.controller = AppController(
             self.screen_manager,
             self.device_manager
         )
-        
+
         # Set controller reference in all screens
         for screen in self.screen_manager.screens:
             screen.controller = self.controller
-            
+
         # Determine starting screen based on pairing status
         if self.device_manager.is_paired():
             self.screen_manager.current = 'home'
+            print("Starting on HOME screen (already paired)")
         else:
             self.screen_manager.current = 'pairing'
-            
+            print("Starting on PAIRING screen (not paired)")
+
+        print(f"Available screens: {self.screen_manager.screen_names}")
+        print(f"Current screen: {self.screen_manager.current}")
+        print(f"Window size: {Window.size}")
+        print("=" * 50)
+
         return self.screen_manager
-    
+
     def on_start(self):
         """Called when the application starts"""
         self.controller.on_app_start()
-        
+
     def on_stop(self):
         """Called when the application is closing"""
         self.controller.cleanup()
