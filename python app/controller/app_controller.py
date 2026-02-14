@@ -173,23 +173,26 @@ class AppController:
         """Read VOC sensors + environmental data and send"""
         sensors = self.current_test_data.get('sensors_to_read', [])
     
-    # Read all sensor data (VOC + temperature + humidity)
+        # Read all sensor data (VOC + temperature + humidity)
         all_data = self.dm.hardware.read_all_sensor_data(sensors)
     
-    # Generate CSV with environmental context
+        # Generate CSV with environmental context
         csv_path = self.dm.hardware.generate_sensor_csv(all_data)
     
-    # Send to phone
+        # Send to phone
         success = self.dm.network.send_csv_to_phone(csv_path)
     
         if success:
-        # Wait for ML result
+            # Wait for ML result
             result = self.dm.network.wait_for_ml_result()
             if result:
                 Clock.schedule_once(
                     lambda dt: self._show_result(result),
                     0
                 )
+        else:
+            print("Failed to send CSV to phone")
+
 
     
     def _show_result(self, result):
