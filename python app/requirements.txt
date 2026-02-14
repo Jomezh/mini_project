@@ -1,0 +1,25 @@
+# Core Kivy
+kivy==2.3.0
+kivymd==1.1.1
+
+# Camera support
+picamera2==0.3.17
+pillow==10.2.0
+
+# Sensor/Hardware support
+adafruit-circuitpython-ads1x15==2.2.22
+adafruit-blinka==8.40.0
+RPi.GPIO==0.7.1
+
+# BLE support
+bluezero==0.8.0
+pydbus==0.6.0
+
+# QR Code generation
+qrcode==7.4.2
+
+# Networking
+requests==2.31.0
+
+# Utilities
+python-dotenv==1.0.1

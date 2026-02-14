@@ -1,0 +1,8 @@
+# Enable SPI
+dtparam=spi=on
+
+# ILI9341 2.8" display via fbtft overlay
+dtoverlay=fbtft,spi0-0,ili9341,rotate=90,speed=16000000,dc_pin=25,reset_pin=24,led_pin=18,framebuffer_width=240,framebuffer_height=320
+
+# Touch controller XPT2046/ADS7846
+dtoverlay=ads7846,cs=1,penirq=25,penirq_pull=2,speed=1000000,swapxy=1,xmin=200,xmax=3900,ymin=200,ymax=3900

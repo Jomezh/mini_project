@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# Kivy
+.kivy/
+*.kv~
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project specific
+/tmp/
+*.csv
+sensor_data_*.csv
+test_images/
+captured_*.jpg
+captured_*.png
+
+# Logs
+*.log
+logs/
+
+# Configuration (if you add config files with secrets)
+config.ini
+secrets.json
+*.env
+
+# Raspberry Pi specific
+.bash_history
