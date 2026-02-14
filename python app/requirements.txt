@@ -1,25 +1,70 @@
-# Core Kivy
+# ============================================
+# MiniK VOC Detection System - Requirements
+# Raspberry Pi Zero 2W
+# ============================================
+
+# ============================================
+# Core Kivy Framework
+# ============================================
 kivy==2.3.0
 kivymd==1.1.1
 
-# Camera support
+# ============================================
+# Camera Support
+# ============================================
 picamera2==0.3.17
 pillow==10.2.0
 
-# Sensor/Hardware support
-adafruit-circuitpython-ads1x15==2.2.22
+# ============================================
+# Sensor Hardware Support
+# ============================================
+
+# MCP3008 ADC (for MQ VOC sensors)
+adafruit-circuitpython-mcp3xxx==1.4.18
+
+# DHT11 Temperature/Humidity sensor
+adafruit-circuitpython-dht==4.0.3
+
+# Base library for Adafruit CircuitPython on Raspberry Pi
 adafruit-blinka==8.40.0
+
+# GPIO Support
 RPi.GPIO==0.7.1
 
-# BLE support
+# ============================================
+# BLE Support
+# ============================================
 bluezero==0.8.0
 pydbus==0.6.0
 
-# QR Code generation
-qrcode==7.4.2
+# ============================================
+# Utilities
+# ============================================
 
-# Networking
+# QR Code generation (for pairing)
+qrcode[pil]==7.4.2
+
+# HTTP requests (for cloud communication)
 requests==2.31.0
 
-# Utilities
+# Environment variables
 python-dotenv==1.0.1
+
+# ============================================
+# Optional - Development/Testing
+# ============================================
+
+# Flask (for web-based remote control - optional)
+flask==3.0.0
+
+# ============================================
+# System Libraries (install via apt)
+# ============================================
+# Run these commands separately:
+#
+# sudo apt install -y python3-dev libsdl2-dev libsdl2-image-dev \
+#     libsdl2-mixer-dev libsdl2-ttf-dev libportmidi-dev \
+#     libswscale-dev libavformat-dev libavcodec-dev zlib1g-dev \
+#     libgstreamer1.0-dev gstreamer1.0-plugins-base \
+#     gstreamer1.0-plugins-good i2c-tools python3-smbus \
+#     bluez bluez-tools python3-dbus
