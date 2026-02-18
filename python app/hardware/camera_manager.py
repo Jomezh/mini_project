@@ -2,65 +2,88 @@ import os
 import time
 from datetime import datetime
 from io import BytesIO
+import threading
 
 try:
     from picamera2 import Picamera2
-    from PIL import Image
+    from libcamera import controls
     HAS_CAMERA = True
 except ImportError:
     HAS_CAMERA = False
-    print("Warning: Camera libraries not available. Running in simulation mode.")
+    print("[CAMERA] picamera2 not available")
 
-from kivy.core.image import Image as CoreImage
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+    print("[CAMERA] PIL not available")
+
 from kivy.graphics.texture import Texture
+from kivy.clock import Clock
 
 
 class CameraManager:
-    """Manages Raspberry Pi Camera Module"""
+    """Manages Raspberry Pi Camera Module (Rev 1.3, CSI)"""
+    
+    # Preview resolution (fits 240x320 display)
+    PREVIEW_WIDTH = 240
+    PREVIEW_HEIGHT = 180
+    
+    # Capture resolution (full camera res for Rev 1.3)
+    CAPTURE_WIDTH = 1640
+    CAPTURE_HEIGHT = 1232
     
     def __init__(self):
         self.camera = None
         self.preview_active = False
-        self.preview_config = None
+        self.current_texture = None
+        self._lock = threading.Lock()
+        self._initialized = False
         
     def initialize(self):
         """Initialize camera"""
         if not HAS_CAMERA:
-            print("Camera running in simulation mode")
+            print("[CAMERA] Running in simulation mode")
             return
         
         try:
             self.camera = Picamera2()
-            
-            # Configure for preview (lower resolution for performance)
-            self.preview_config = self.camera.create_preview_configuration(
-                main={"size": (640, 480), "format": "RGB888"}
-            )
-            
-            # Configure for capture (higher resolution)
-            self.capture_config = self.camera.create_still_configuration(
-                main={"size": (1640, 1232), "format": "RGB888"}
-            )
-            
-            print("Camera initialized successfully")
+            self._initialized = True
+            print("[CAMERA] Picamera2 initialized successfully")
             
         except Exception as e:
-            print(f"Error initializing camera: {e}")
+            print(f"[CAMERA] Initialization failed: {e}")
             self.camera = None
+            self._initialized = False
     
     def start_preview(self):
         """Start camera preview"""
-        if not HAS_CAMERA or self.camera is None:
+        if not HAS_CAMERA or not self._initialized or self.camera is None:
+            print("[CAMERA] Cannot start preview - not initialized")
+            return
+        
+        if self.preview_active:
             return
         
         try:
-            if not self.preview_active:
-                self.camera.configure(self.preview_config)
-                self.camera.start()
-                self.preview_active = True
-                print("Camera preview started")
+            # Configure for preview
+            preview_config = self.camera.create_preview_configuration(
+                main={
+                    "size": (self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT),
+                    "format": "RGB888"
+                },
+                buffer_count=2  # Double buffering for smoother preview
+            )
+            
+            self.camera.configure(preview_config)
+            self.camera.start()
+            self.preview_active = True
+            print("[CAMERA] Preview started")
+            
         except Exception as e:
-            print(f"Error starting preview: {e}")
+            print(f"[CAMERA] Error starting preview: {e}")
+            self.preview_active = False
     
     def stop_preview(self):
         """Stop camera preview"""
@@ -71,106 +94,106 @@ class CameraManager:
             if self.preview_active:
                 self.camera.stop()
                 self.preview_active = False
-                print("Camera preview stopped")
+                self.current_texture = None
+                print("[CAMERA] Preview stopped")
+                
         except Exception as e:
-            print(f"Error stopping preview: {e}")
+            print(f"[CAMERA] Error stopping preview: {e}")
     
     def get_preview_texture(self):
         """Get current preview frame as Kivy texture"""
-        if not HAS_CAMERA or self.camera is None or not self.preview_active:
+        if not HAS_CAMERA or not self.preview_active or self.camera is None:
             return None
         
         try:
-            # Capture frame from preview
-            frame = self.camera.capture_array()
-            
-            # Convert to PIL Image
-            pil_image = Image.fromarray(frame)
-            
-            # Resize to fit display (240x320)
-            pil_image = pil_image.resize((240, 180))
-            
-            # Convert to Kivy texture
-            buf = BytesIO()
-            pil_image.save(buf, format='PNG')
-            buf.seek(0)
-            
-            core_image = CoreImage(buf, ext='png')
-            return core_image.texture
-            
+            with self._lock:
+                # Capture frame as numpy array
+                frame = self.camera.capture_array("main")
+                
+                # frame is (height, width, 3) in RGB888
+                h, w, channels = frame.shape
+                
+                # Create Kivy texture
+                texture = Texture.create(size=(w, h), colorfmt='rgb')
+                
+                # Flip vertically (Kivy uses bottom-left origin)
+                flipped = frame[::-1, :, :]
+                
+                # Blit data to texture
+                texture.blit_buffer(
+                    flipped.tobytes(),
+                    colorfmt='rgb',
+                    bufferfmt='ubyte'
+                )
+                
+                self.current_texture = texture
+                return texture
+                
         except Exception as e:
-            print(f"Error getting preview texture: {e}")
-            return None
+            print(f"[CAMERA] Error getting preview frame: {e}")
+            return self.current_texture  # Return last good frame
     
     def capture_image(self):
-        """Capture high-resolution image"""
+        """Capture full resolution still image"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"/tmp/capture_{timestamp}.jpg"
+        filename = f"/home/pi/python_app/captures/capture_{timestamp}.jpg"
         
-        if not HAS_CAMERA or self.camera is None:
-            # Simulation mode - create dummy image
-            return self._create_dummy_image(filename)
+        if not HAS_CAMERA or not self._initialized:
+            print("[CAMERA] Cannot capture - not initialized")
+            return None
         
         try:
-            # Stop preview if active
+            # Stop preview
             was_previewing = self.preview_active
             if was_previewing:
                 self.stop_preview()
             
             # Configure for still capture
-            self.camera.configure(self.capture_config)
+            still_config = self.camera.create_still_configuration(
+                main={
+                    "size": (self.CAPTURE_WIDTH, self.CAPTURE_HEIGHT),
+                    "format": "RGB888"
+                }
+            )
+            
+            self.camera.configure(still_config)
             self.camera.start()
             
-            # Allow camera to adjust
-            time.sleep(1)
+            # Allow auto-exposure to settle
+            time.sleep(2)
             
-            # Capture image
+            # Capture to file directly
             self.camera.capture_file(filename)
             
-            # Stop capture
             self.camera.stop()
             
-            # Restart preview if it was active
+            # Restart preview if it was running
             if was_previewing:
                 self.start_preview()
             
-            print(f"Image captured: {filename}")
+            print(f"[CAMERA] Image captured: {filename}")
             return filename
             
         except Exception as e:
-            print(f"Error capturing image: {e}")
-            return None
-    
-    def _create_dummy_image(self, filename):
-        """Create a dummy image for simulation"""
-        try:
-            from PIL import Image, ImageDraw, ImageFont
-            
-            # Create a simple image
-            img = Image.new('RGB', (1640, 1232), color='lightgray')
-            draw = ImageDraw.Draw(img)
-            
-            # Add text
-            text = "SIMULATION MODE\nFood Sample"
-            draw.text((820, 616), text, fill='black', anchor='mm')
-            
-            # Save
-            img.save(filename)
-            return filename
-            
-        except Exception as e:
-            print(f"Error creating dummy image: {e}")
+            print(f"[CAMERA] Error capturing image: {e}")
+            # Try to restart preview if it was running
+            try:
+                if was_previewing:
+                    self.start_preview()
+            except:
+                pass
             return None
     
     def cleanup(self):
-        """Cleanup camera resources"""
+        """Release camera resources"""
         if self.preview_active:
             self.stop_preview()
         
-        if HAS_CAMERA and self.camera is not None:
+        if self.camera is not None:
             try:
                 self.camera.close()
-            except:
-                pass
+                print("[CAMERA] Camera closed")
+            except Exception as e:
+                print(f"[CAMERA] Error closing camera: {e}")
         
-        print("Camera manager cleaned up")
+        self._initialized = False
