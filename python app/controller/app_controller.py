@@ -120,29 +120,59 @@ class AppController:
             self.sm.get_screen('capture').start_preview()
     
     # Capture Screen Actions
+    # Capture Screen Actions
     def capture_image(self):
         """Capture image and send to phone"""
         screen = self.sm.get_screen('capture')
         screen.disable_capture()
-        
+    
+    # Run in background thread so UI doesn't freeze during capture
+        Thread(target=self._do_capture, daemon=True).start()
+
+    def _do_capture(self):
+        """Background capture + network logic"""
+        screen = self.sm.get_screen('capture')
+    
         # Capture image
         image_path = self.dm.hardware.capture_image()
         if not image_path:
-            screen.show_error("Failed to capture image")
-            screen.enable_capture()
+            Clock.schedule_once(
+                lambda dt: screen.show_error("Failed to capture image"), 0
+            )
+            Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
             return
-        
-        # Send to phone
-        success = self.dm.network.send_image_to_phone(image_path)
-        if success:
-            self.current_test_data['image_path'] = image_path
-            self.sm.current = 'analyzing'
-            
-            # Wait for CNN result in background
-            Thread(target=self._wait_for_cnn_result, daemon=True).start()
+    
+        self.current_test_data['image_path'] = image_path
+        print(f"[CONTROLLER] Image captured: {image_path}")
+    
+        import config
+    
+        if config.USE_REAL_NETWORK:
+            # Real flow: send to phone, wait for CNN result
+            success = self.dm.network.send_image_to_phone(image_path)
+            if success:
+                Clock.schedule_once(lambda dt: setattr(self.sm, 'current', 'analyzing'), 0)
+                Thread(target=self._wait_for_cnn_result, daemon=True).start()
+            else:
+                Clock.schedule_once(
+                    lambda dt: screen.show_error("Failed to send image"), 0
+                )
+                Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
         else:
-            screen.show_error("Failed to send image")
-            screen.enable_capture()
+            # Mock mode: skip network entirely, use default sensors, go to reading
+            print("[CONTROLLER] Mock network - skipping CNN, using default sensors")
+            self.current_test_data['food_type'] = 'Unknown'
+            self.current_test_data['sensors_to_read'] = ['MQ2', 'MQ3', 'MQ135']
+        
+        Clock.schedule_once(lambda dt: self._proceed_to_reading(), 0)
+
+    def _proceed_to_reading(self):
+         """Navigate to sensor reading screen"""
+         self.sm.current = 'reading'
+         screen = self.sm.get_screen('reading')
+         screen.set_sensors(self.current_test_data['sensors_to_read'])
+         Thread(target=self._read_voc_sensors, daemon=True).start()
+
     
     def _wait_for_cnn_result(self):
         """Wait for CNN processing result from phone"""
