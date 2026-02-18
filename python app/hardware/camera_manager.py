@@ -6,31 +6,19 @@ import threading
 
 try:
     from picamera2 import Picamera2
-    from libcamera import controls
     HAS_CAMERA = True
 except ImportError:
     HAS_CAMERA = False
     print("[CAMERA] picamera2 not available")
 
-try:
-    from PIL import Image
-    HAS_PIL = True
-except ImportError:
-    HAS_PIL = False
-    print("[CAMERA] PIL not available")
-
 from kivy.graphics.texture import Texture
-from kivy.clock import Clock
 
 
 class CameraManager:
     """Manages Raspberry Pi Camera Module (Rev 1.3, CSI)"""
     
-    # Preview resolution (fits 240x320 display)
     PREVIEW_WIDTH = 240
     PREVIEW_HEIGHT = 180
-    
-    # Capture resolution (full camera res for Rev 1.3)
     CAPTURE_WIDTH = 1640
     CAPTURE_HEIGHT = 1232
     
@@ -40,6 +28,7 @@ class CameraManager:
         self.current_texture = None
         self._lock = threading.Lock()
         self._initialized = False
+        self._capturing = False
         
     def initialize(self):
         """Initialize camera"""
@@ -51,7 +40,6 @@ class CameraManager:
             self.camera = Picamera2()
             self._initialized = True
             print("[CAMERA] Picamera2 initialized successfully")
-            
         except Exception as e:
             print(f"[CAMERA] Initialization failed: {e}")
             self.camera = None
@@ -60,27 +48,23 @@ class CameraManager:
     def start_preview(self):
         """Start camera preview"""
         if not HAS_CAMERA or not self._initialized or self.camera is None:
-            print("[CAMERA] Cannot start preview - not initialized")
             return
         
         if self.preview_active:
             return
         
         try:
-            # Configure for preview
             preview_config = self.camera.create_preview_configuration(
                 main={
                     "size": (self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT),
                     "format": "RGB888"
                 },
-                buffer_count=2  # Double buffering for smoother preview
+                buffer_count=2
             )
-            
             self.camera.configure(preview_config)
             self.camera.start()
             self.preview_active = True
             print("[CAMERA] Preview started")
-            
         except Exception as e:
             print(f"[CAMERA] Error starting preview: {e}")
             self.preview_active = False
@@ -96,7 +80,6 @@ class CameraManager:
                 self.preview_active = False
                 self.current_texture = None
                 print("[CAMERA] Preview stopped")
-                
         except Exception as e:
             print(f"[CAMERA] Error stopping preview: {e}")
     
@@ -107,22 +90,15 @@ class CameraManager:
         
         try:
             with self._lock:
-                # Capture frame as numpy array
                 frame = self.camera.capture_array("main")
+                h, w, _ = frame.shape
                 
-                # frame is (height, width, 3) in RGB888
-                h, w, channels = frame.shape
-
-                # Fix: Convert BGR to RGB
+                # Fix blue tint: flip BGR to RGB
                 frame_rgb = frame[:, :, ::-1].copy()
                 
-                # Create Kivy texture
-                texture = Texture.create(size=(w, h), colorfmt='rgb')
+                # Flip vertically for Kivy
+                flipped = frame_rgb[::-1, :, :]
                 
-                # Flip vertically (Kivy uses bottom-left origin)
-                flipped = frame[::-1, :, :]
-                
-                # Blit data to texture
                 texture = Texture.create(size=(w, h), colorfmt='rgb')
                 texture.blit_buffer(
                     flipped.tobytes(),
@@ -135,24 +111,29 @@ class CameraManager:
                 
         except Exception as e:
             print(f"[CAMERA] Error getting preview frame: {e}")
-            return self.current_texture  # Return last good frame
+            return self.current_texture
     
     def capture_image(self):
         """Capture full resolution still image"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"/home/miniK/mini_project/python app/captures/capture_{timestamp}.jpg"
-        
-        if not HAS_CAMERA or not self._initialized:
-            print("[CAMERA] Cannot capture - not initialized")
+        if self._capturing:
+            print("[CAMERA] Capture already in progress")
             return None
         
+        self._capturing = True
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        captures_dir = os.path.join(base_dir, 'captures')
+        os.makedirs(captures_dir, exist_ok=True)
+        filename = os.path.join(captures_dir, f"capture_{timestamp}.jpg")
+        
+        was_previewing = self.preview_active
+        
         try:
-            # Stop preview
-            was_previewing = self.preview_active
             if was_previewing:
                 self.stop_preview()
+                time.sleep(0.5)
             
-            # Configure for still capture
             still_config = self.camera.create_still_configuration(
                 main={
                     "size": (self.CAPTURE_WIDTH, self.CAPTURE_HEIGHT),
@@ -162,31 +143,28 @@ class CameraManager:
             
             self.camera.configure(still_config)
             self.camera.start()
-            
-            # Allow auto-exposure to settle
             time.sleep(2)
-            
-            # Capture to file directly
             self.camera.capture_file(filename)
-            
             self.camera.stop()
-            
-            # Restart preview if it was running
-            if was_previewing:
-                self.start_preview()
             
             print(f"[CAMERA] Image captured: {filename}")
             return filename
             
         except Exception as e:
             print(f"[CAMERA] Error capturing image: {e}")
-            # Try to restart preview if it was running
+            try:
+                self.camera.stop()
+            except:
+                pass
+            return None
+            
+        finally:
+            self._capturing = False
             try:
                 if was_previewing:
                     self.start_preview()
             except:
                 pass
-            return None
     
     def cleanup(self):
         """Release camera resources"""
