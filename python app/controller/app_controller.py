@@ -202,29 +202,38 @@ class AppController:
     def _read_voc_sensors(self):
         """Read VOC sensors + environmental data and send"""
         sensors = self.current_test_data.get('sensors_to_read', [])
-    
+
         # Read all sensor data (VOC + temperature + humidity)
         all_data = self.dm.hardware.read_all_sensor_data(sensors)
-    
-        # Generate CSV with environmental context
+
+        # Generate CSV
         csv_path = self.dm.hardware.generate_sensor_csv(all_data)
-    
-        # Send to phone
-        success = self.dm.network.send_csv_to_phone(csv_path)
-    
-        if success:
-            # Wait for ML result
-            result = self.dm.network.wait_for_ml_result()
-            if result:
-                Clock.schedule_once(
-                    lambda dt: self._show_result(result),
-                    0
-                )
+
+        import config
+
+        if config.USE_REAL_NETWORK:
+            # Real flow: send CSV to phone, wait for ML result
+            success = self.dm.network.send_csv_to_phone(csv_path)
+            if success:
+                result = self.dm.network.wait_for_ml_result()
+                if result:
+                    Clock.schedule_once(lambda dt: self._show_result(result), 0)
+            else:
+                print("[CONTROLLER] Failed to send CSV to phone")
         else:
-            print("Failed to send CSV to phone")
-
-
-    
+            # Mock mode: generate a fake result and show it directly
+            print("[CONTROLLER] Mock network - generating mock ML result")
+            import random
+            mock_result = {
+                'status': random.choice(['Fresh', 'Moderate', 'Spoiled']),
+                'confidence': round(random.uniform(75, 99), 1),
+                'food_type': self.current_test_data.get('food_type', 'Unknown'),
+                'details': 'Mock analysis result'
+            }
+            # Small delay to simulate processing
+            time.sleep(1)
+            Clock.schedule_once(lambda dt: self._show_result(mock_result), 0) 
+            
     def _show_result(self, result):
         """Display final result"""
         self.sm.current = 'result'
