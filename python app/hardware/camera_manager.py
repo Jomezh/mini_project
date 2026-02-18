@@ -112,6 +112,9 @@ class CameraManager:
                 
                 # frame is (height, width, 3) in RGB888
                 h, w, channels = frame.shape
+
+                # Fix: Convert BGR to RGB
+                frame_rgb = frame[:, :, ::-1].copy()
                 
                 # Create Kivy texture
                 texture = Texture.create(size=(w, h), colorfmt='rgb')
@@ -120,6 +123,7 @@ class CameraManager:
                 flipped = frame[::-1, :, :]
                 
                 # Blit data to texture
+                texture = Texture.create(size=(w, h), colorfmt='rgb')
                 texture.blit_buffer(
                     flipped.tobytes(),
                     colorfmt='rgb',
@@ -136,7 +140,7 @@ class CameraManager:
     def capture_image(self):
         """Capture full resolution still image"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"/home/pi/python_app/captures/capture_{timestamp}.jpg"
+        filename = f"/home/miniK/mini_project/python app/captures/capture_{timestamp}.jpg"
         
         if not HAS_CAMERA or not self._initialized:
             print("[CAMERA] Cannot capture - not initialized")
