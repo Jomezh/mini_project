@@ -10,14 +10,16 @@ class DeviceManager:
     CONFIG_FILE = '/home/pi/.minik_config.json' if config.IS_RASPBERRY_PI else './minik_config.json'
     
     def __init__(self):
-        self.device_id = self._load_or_generate_device_id()
-        self.config_data = self._load_config()
-        
-        # Initialize hardware (respects config flags)
-        self.hardware = HardwareManager()
-        
-        # Initialize network (respects config flags)
-        self.network = NetworkManager(self.device_id)
+       self.device_id = self._load_or_generate_device_id()
+       self.config_data = self._load_config()
+       self.hardware = HardwareManager()
+       self.network = NetworkManager(self.device_id)
+    
+    # Start automatic cleanup manager
+       from utils.cleanup_manager import CleanupManager
+       base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+       self.cleanup_manager = CleanupManager(base_dir)
+       self.cleanup_manager.start()
     
     def _load_or_generate_device_id(self):
         """Load existing device ID or generate new one"""
@@ -68,9 +70,10 @@ class DeviceManager:
             json.dump(self.config_data, f)
     
     def cleanup(self):
-        """Cleanup resources"""
-        self.hardware.cleanup()
-        self.network.cleanup()
+       """Cleanup resources on app exit"""
+       self.hardware.cleanup()
+       self.network.cleanup()
+       self.cleanup_manager.stop()
     
     def shutdown(self):
         """Shutdown the device"""
