@@ -7,6 +7,7 @@ from kivy.graphics import Color, Rectangle
 import qrcode
 import io
 from kivy.core.image import Image as CoreImage
+import config
 
 
 class PairingScreen(Screen):
@@ -81,6 +82,16 @@ class PairingScreen(Screen):
         layout.add_widget(self.button_container)
         layout.add_widget(self.status_label)
         
+        if config.SHOW_RESET_BUTTON:
+            self.reset_btn = Button(
+                text='Reset Pairing',
+                size_hint=(1, 0.15),
+                font_size='10sp',
+                background_color=(0.5, 0.3, 0.3, 1)
+            )
+            self.reset_btn.bind(on_press=self.on_reset_pairing)
+            layout.add_widget(self.reset_btn)
+        
         self.add_widget(layout)
     
     def on_pair_pressed(self, instance):
@@ -113,6 +124,11 @@ class PairingScreen(Screen):
         # Show QR container
         self.qr_container.opacity = 1
         self.pair_btn.disabled = True
+    
+
+    def on_reset_pairing(self, instance):
+       if self.controller:
+           self.controller.reset_pairing()
     
     def hide_qr_code(self):
         """Hide QR code after timeout"""
