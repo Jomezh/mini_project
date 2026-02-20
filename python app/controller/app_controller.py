@@ -51,22 +51,45 @@ class AppController:
             Clock.schedule_once(lambda dt: self._on_paired(result), 0)
 
     def _on_paired(self, credentials):
-        if self.ble_timeout_event:
-            self.ble_timeout_event.cancel()
+       """Called when BLE receives SSID + password from phone"""
+       if self.ble_timeout_event:
+           self.ble_timeout_event.cancel()
 
-        self.dm.save_pairing(credentials)
+       self.dm.save_pairing(credentials)
 
-        wifi_success = self.dm.network.connect_wifi(
-            credentials['ssid'],
-            credentials['password']
+       # Connect to phone's WiFi hotspot
+       # Uses 2-second delayed connect internally (from other chat)
+       wifi_success = self.dm.network.connect_wifi(
+           credentials['ssid'],
+           credentials['password']
         )
 
-        if wifi_success:
-            self.dm.network.stop_ble()
-            self.dm.network.start_wifi_server()
-            self.sm.current = 'home'
-        else:
-            self.sm.get_screen('pairing').show_error("WiFi connection failed")
+       if wifi_success:
+           # Get Pi's IP on phone's hotspot
+           pi_ip = self.dm.network.get_local_ip()
+           print(f"[CONTROLLER] Pi IP on hotspot: {pi_ip}")
+
+           if pi_ip:
+               # Send IP back via BLE BEFORE closing BLE
+               # Phone needs this to know where to send/receive data
+               self.dm.network.send_ip_to_phone(pi_ip)
+           else:
+               print("[CONTROLLER] Warning: could not get Pi IP")
+
+           # Small wait to ensure phone reads IP characteristic
+           time.sleep(1)
+
+           # Now safe to close BLE - phone has the IP
+           self.dm.network.stop_ble()
+
+           # Start Flask server on Pi for data exchange
+           self.dm.network.start_wifi_server()
+
+           self.sm.current = 'home'
+
+       else:
+           self.sm.get_screen('pairing').show_error("WiFi connection failed")
+
 
     def stop_ble_pairing(self):
         self.dm.network.stop_ble()

@@ -304,3 +304,14 @@ class NetworkManager:
     def cleanup(self):
         if hasattr(self.ble,  'stop'): self.ble.stop()
         if hasattr(self.wifi, 'stop'): self.wifi.stop()
+    def get_local_ip(self):
+       """Get Pi's current IP on wlan0"""
+       if hasattr(self.wifi, 'get_local_ip'):
+           return self.wifi.get_local_ip()
+       return None
+
+    def send_ip_to_phone(self, ip_address):
+        """Write Pi IP to BLE characteristic so phone can read it"""
+        if hasattr(self.ble, 'send_ip_to_phone'):
+           return self.ble.send_ip_to_phone(ip_address)
+        return False
