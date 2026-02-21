@@ -74,14 +74,16 @@ class DeviceManager:
             self._start_heartbeat(credentials['phone_address'])
 
     def reset_pairing(self):
-        """Clear pairing data but keep device ID"""
-        if self.heartbeat:
-            self.heartbeat.stop()
-            self.heartbeat = None
+        """Clear all pairing data from config file"""
+        keys_to_remove = ['paired', 'ssid', 'phone_address']
+        for key in keys_to_remove:
+           self.config.pop(key, None)
 
-        self.config_data = {'device_id': self.device_id}
-        self._write_config(self.config_data)
+        with open(self.CONFIG_FILE, 'w') as f:
+           json.dump(self.config, f)
+
         print("[DEVICE] Pairing data cleared")
+
 
     # ── Boot Connection Verification ───────────────────
 
