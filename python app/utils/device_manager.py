@@ -134,44 +134,40 @@ class DeviceManager:
     # ── Boot Scan ──────────────────────────────────────
 
     def scan_for_known_devices(self, timeout=10):
-        """
-        Scan BLE for any previously paired device.
-        Returns matching known_device dict if found, else None.
-        Note: BLE found ≠ hotspot on. WiFi connect validates hotspot separately.
-        """
-        if not config.USE_REAL_NETWORK:
-            print("[DEVICE] Mock mode - simulating BLE scan")
-            return self.network.scan_for_devices(
-                known_macs=[d['ble_mac'] for d in self.get_known_devices()],
-                known_names=[d['ble_name'] for d in self.get_known_devices()],
-                timeout=timeout
-            )
+       """
+       Scan BLE for any previously paired device.
+       Returns full known_device dict if found, else None.
+       Works identically in both mock and real mode.
+       """
+       known = self.get_known_devices()
+       if not known:
+           print("[DEVICE] No known devices to scan for")
+           return None
 
-        known = self.get_known_devices()
-        if not known:
-            return None
+       known_macs  = {d['ble_mac']: d for d in known}
+       known_names = {d['ble_name']: d for d in known}
 
-        known_macs  = {d['ble_mac']: d for d in known}
-        known_names = {d['ble_name']: d for d in known}
+       print(f"[DEVICE] Scanning for {len(known)} known device(s)... "
+             f"({'mock' if not config.USE_REAL_NETWORK else 'real'})")
 
-        print(f"[DEVICE] Scanning for {len(known)} known device(s)...")
-
-        found = self.network.scan_for_devices(
-            known_macs=list(known_macs.keys()),
-            known_names=list(known_names.keys()),
-            timeout=timeout
+       found = self.network.scan_for_devices(
+           known_macs=list(known_macs.keys()),
+           known_names=list(known_names.keys()),
+           timeout=timeout
         )
 
-        if found:
-            mac   = found.get('mac', '')
-            name  = found.get('name', '')
-            match = known_macs.get(mac) or known_names.get(name)
-            if match:
-                print(f"[DEVICE] Found: {match['ble_name']}")
-                return match
+       if found:
+           # Look up the full known_device entry by MAC or name
+           mac   = found.get('mac', '')
+           name  = found.get('name', '')
+           match = known_macs.get(mac) or known_names.get(name)
+           if match:
+               print(f"[DEVICE] Found known device: {match['ble_name']}")
+               return match
 
-        print("[DEVICE] No known devices nearby")
-        return None
+       print("[DEVICE] No known devices found nearby")
+       return None
+
 
     # ── Heartbeat ──────────────────────────────────────
 
