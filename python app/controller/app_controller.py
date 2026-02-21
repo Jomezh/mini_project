@@ -4,6 +4,11 @@ import time
 import os
 
 
+# Retry config for WiFi/hotspot connect
+WIFI_RETRY_LIMIT    = 3    # Max attempts before giving up
+WIFI_RETRY_INTERVAL = 10   # Seconds between retries
+
+
 class AppController:
     """Main application controller managing state and business logic"""
 
@@ -15,11 +20,9 @@ class AppController:
         self.current_test_data   = {}
 
     def on_app_start(self):
-        """Initialize hardware on app start"""
         Thread(target=self.dm.hardware.initialize, daemon=True).start()
 
     def cleanup(self):
-        """Cleanup before app closes"""
         self.dm.cleanup()
         if self.priming_check_event:
             self.priming_check_event.cancel()
@@ -30,18 +33,117 @@ class AppController:
     # Pairing Screen
     # ──────────────────────────────────────────────────
 
-    def start_pairing(self):
-        """Start BLE pairing process"""
+    def start_pairing_screen(self):
+        """
+        Always called at boot.
+        If known devices exist → scan for them first.
+        If none → show QR immediately.
+        """
         screen = self.sm.get_screen('pairing')
-        screen.show_qr_code()
+
+        if self.dm.has_known_devices():
+            screen.show_scanning()
+            Thread(target=self._scan_for_known_device, daemon=True).start()
+        else:
+            # First ever boot - no history, go straight to QR
+            screen.show_qr()
+
+    def _scan_for_known_device(self):
+        """BLE scan for any previously paired device (10s timeout)"""
+        found = self.dm.scan_for_known_devices(timeout=10)
+
+        if found:
+            # BLE confirmed phone is nearby
+            # Hotspot state is still unknown - will check during WiFi connect
+            Clock.schedule_once(
+                lambda dt: self._auto_connect(found), 0
+            )
+        else:
+            # No known device nearby - show QR for new pairing
+            Clock.schedule_once(
+                lambda dt: self.sm.get_screen('pairing').show_qr(), 0
+            )
+
+    def _auto_connect(self, known_device):
+        """Phone found via BLE - attempt WiFi connect"""
+        self.sm.get_screen('pairing').show_connecting(known_device['ble_name'])
+        Thread(
+            target=self._do_wifi_connect_with_retry,
+            args=(known_device,),
+            daemon=True
+        ).start()
+
+    def _do_wifi_connect_with_retry(self, known_device):
+        """
+        Try to connect to phone's hotspot.
+        BLE confirmed the phone is nearby so retries make sense.
+        If hotspot is off, notify phone via BLE and wait for user to enable it.
+        """
+        ssid    = known_device['ssid']
+        ble_mac = known_device['ble_mac']
+        name    = known_device['ble_name']
+
+        for attempt in range(1, WIFI_RETRY_LIMIT + 1):
+            print(f"[CONTROLLER] WiFi attempt {attempt}/{WIFI_RETRY_LIMIT} "
+                  f"for '{ssid}'")
+
+            # password=None: nmcli uses saved credentials
+            wifi_ok = self.dm.network.connect_wifi(ssid, password=None)
+
+            if wifi_ok:
+                self.dm.update_last_connected(ble_mac)
+                self.dm.network.start_wifi_server()
+                Clock.schedule_once(
+                    lambda dt: setattr(self.sm, 'current', 'home'), 0
+                )
+                return
+
+            # Hotspot is off - notify phone via BLE (BLE still alive)
+            self.dm.network.notify_enable_hotspot()
+
+            if attempt < WIFI_RETRY_LIMIT:
+                Clock.schedule_once(
+                    lambda dt, a=attempt: 
+                        self.sm.get_screen('pairing').show_hotspot_prompt(
+                            device_name=name,
+                            attempt=a,
+                            retries_left=WIFI_RETRY_LIMIT - a,
+                            retry_in=WIFI_RETRY_INTERVAL
+                        ), 0
+                )
+                time.sleep(WIFI_RETRY_INTERVAL)
+
+        # All retries exhausted
+        Clock.schedule_once(
+            lambda dt: self.sm.get_screen('pairing').show_qr(
+                message=f"Could not reach hotspot on {name}.\n"
+                        f"Enable hotspot or scan to re-pair."
+            ), 0
+        )
+
+    def retry_wifi_now(self):
+        """User tapped Retry Now on hotspot prompt"""
+        self.sm.get_screen('pairing').show_scanning()
+        Thread(target=self._scan_for_known_device, daemon=True).start()
+
+    def rescan_for_devices(self):
+        """User tapped Scan Again on QR screen"""
+        screen = self.sm.get_screen('pairing')
+        screen.show_scanning()
+        Thread(target=self._scan_for_known_device, daemon=True).start()
+
+    def start_pairing(self):
+        """User tapped Pair New Device - start BLE advertising"""
+        screen = self.sm.get_screen('pairing')
+        screen.show_waiting_ble()
 
         success = self.dm.network.start_ble_advertising()
         if not success:
-            screen.show_error("Failed to start BLE")
+            screen.show_qr(message="Failed to start BLE - try again")
             return
 
         self.ble_timeout_event = Clock.schedule_once(
-            lambda dt: self.stop_ble_pairing(), 180
+            lambda dt: self._on_ble_pairing_timeout(), 180
         )
         Thread(target=self._wait_for_pairing, daemon=True).start()
 
@@ -49,64 +151,101 @@ class AppController:
         result = self.dm.network.wait_for_pairing()
         if result:
             Clock.schedule_once(lambda dt: self._on_paired(result), 0)
+        else:
+            Clock.schedule_once(
+                lambda dt: self.sm.get_screen('pairing').show_qr(
+                    message="Pairing timed out - try again"
+                ), 0
+            )
 
     def _on_paired(self, credentials):
-       """Called when BLE receives SSID + password from phone"""
-       if self.ble_timeout_event:
-           self.ble_timeout_event.cancel()
+        """
+        Phone sent SSID + password via BLE.
+        BLE is still alive so we can notify about hotspot if needed.
+        """
+        if self.ble_timeout_event:
+            self.ble_timeout_event.cancel()
 
-       self.dm.save_pairing(credentials)
+        # Save to known_devices list
+        self.dm.save_pairing(credentials)
 
-       # Connect to phone's WiFi hotspot
-       # Uses 2-second delayed connect internally (from other chat)
-       wifi_success = self.dm.network.connect_wifi(
-           credentials['ssid'],
-           credentials['password']
+        Thread(
+            target=self._do_new_pair_wifi_connect,
+            args=(credentials,),
+            daemon=True
+        ).start()
+
+    def _do_new_pair_wifi_connect(self, credentials):
+        """
+        WiFi connect after fresh BLE pairing.
+        User may have sent credentials before enabling hotspot, so retry.
+        """
+        ssid     = credentials['ssid']
+        password = credentials['password']
+        name     = credentials.get('ble_name', 'your phone')
+
+        for attempt in range(1, WIFI_RETRY_LIMIT + 1):
+            print(f"[CONTROLLER] New pair WiFi attempt {attempt}/{WIFI_RETRY_LIMIT}")
+
+            wifi_ok = self.dm.network.connect_wifi(ssid, password)
+
+            if wifi_ok:
+                # Get Pi IP and send back via BLE before closing it
+                pi_ip = self.dm.network.get_local_ip()
+                if pi_ip:
+                    self.dm.network.send_ip_to_phone(pi_ip)
+
+                time.sleep(1)   # Let phone read IP characteristic
+
+                self.dm.network.stop_ble()
+                self.dm.network.start_wifi_server()
+                Clock.schedule_once(
+                    lambda dt: setattr(self.sm, 'current', 'home'), 0
+                )
+                return
+
+            # Hotspot not on - notify phone via BLE (still connected)
+            self.dm.network.notify_enable_hotspot()
+
+            if attempt < WIFI_RETRY_LIMIT:
+                Clock.schedule_once(
+                    lambda dt, a=attempt:
+                        self.sm.get_screen('pairing').show_hotspot_prompt(
+                            device_name=name,
+                            attempt=a,
+                            retries_left=WIFI_RETRY_LIMIT - a,
+                            retry_in=WIFI_RETRY_INTERVAL
+                        ), 0
+                )
+                time.sleep(WIFI_RETRY_INTERVAL)
+
+        # All retries failed
+        Clock.schedule_once(
+            lambda dt: self.sm.get_screen('pairing').show_qr(
+                message="Please enable your phone's hotspot,\nthen scan again"
+            ), 0
         )
 
-       if wifi_success:
-           # Get Pi's IP on phone's hotspot
-           pi_ip = self.dm.network.get_local_ip()
-           print(f"[CONTROLLER] Pi IP on hotspot: {pi_ip}")
-
-           if pi_ip:
-               # Send IP back via BLE BEFORE closing BLE
-               # Phone needs this to know where to send/receive data
-               self.dm.network.send_ip_to_phone(pi_ip)
-           else:
-               print("[CONTROLLER] Warning: could not get Pi IP")
-
-           # Small wait to ensure phone reads IP characteristic
-           time.sleep(1)
-
-           # Now safe to close BLE - phone has the IP
-           self.dm.network.stop_ble()
-
-           # Start Flask server on Pi for data exchange
-           self.dm.network.start_wifi_server()
-
-           self.sm.current = 'home'
-
-       else:
-           self.sm.get_screen('pairing').show_error("WiFi connection failed")
-
+    def _on_ble_pairing_timeout(self):
+        self.dm.network.stop_ble()
+        self.sm.get_screen('pairing').show_qr(
+            message="Pairing timed out - try again"
+        )
 
     def stop_ble_pairing(self):
         self.dm.network.stop_ble()
-        self.sm.get_screen('pairing').hide_qr_code()
+        self.sm.get_screen('pairing').show_qr()
 
     def reset_pairing(self):
-        """Reset pairing data - dev/testing use"""
         self.dm.reset_pairing()
-        print("[CONTROLLER] Pairing reset")
-        self.sm.get_screen('pairing').reset_ui()
+        self.sm.get_screen('pairing').show_qr()
+        print("[CONTROLLER] All pairing data cleared")
 
     # ──────────────────────────────────────────────────
     # Home Screen
     # ──────────────────────────────────────────────────
 
     def start_test(self):
-        """Start spoilage test - check sensors first"""
         if not self.dm.hardware.are_voc_sensors_ready():
             screen = self.sm.get_screen('home')
             screen.show_waiting_message()
@@ -131,12 +270,10 @@ class AppController:
     # ──────────────────────────────────────────────────
 
     def capture_image(self):
-        """Disable UI and start capture in background thread"""
         self.sm.get_screen('capture').disable_capture()
         Thread(target=self._do_capture, daemon=True).start()
 
     def _do_capture(self):
-        """Background: capture image then route based on network mode"""
         screen = self.sm.get_screen('capture')
 
         image_path = self.dm.hardware.capture_image()
@@ -153,8 +290,6 @@ class AppController:
         import config
 
         if config.USE_REAL_NETWORK:
-            # Real flow:
-            #   Send image → wait for CNN result (confirms cloud receipt) → delete
             success = self.dm.network.send_image_to_phone(image_path)
             if success:
                 Clock.schedule_once(
@@ -167,10 +302,9 @@ class AppController:
                 )
                 Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
         else:
-            # Mock flow: simulate confirmed cloud receipt, delete, skip to reading
-            print("[CONTROLLER] Mock network - skipping CNN, using default sensors")
-            self.current_test_data['food_type']        = 'Unknown'
-            self.current_test_data['sensors_to_read']  = ['MQ2', 'MQ3', 'MQ135']
+            print("[CONTROLLER] Mock - skipping CNN, using default sensors")
+            self.current_test_data['food_type']       = 'Unknown'
+            self.current_test_data['sensors_to_read'] = ['MQ2', 'MQ3', 'MQ135']
             self._delete_image(image_path)
             Clock.schedule_once(lambda dt: self._proceed_to_reading(), 0)
 
@@ -182,14 +316,9 @@ class AppController:
             )
 
     def _on_cnn_result_received(self, result):
-        """
-        CNN result = cloud confirmed it received and processed the image.
-        Safe to delete the local copy now.
-        """
         self.current_test_data['food_type']       = result.get('food_type')
         self.current_test_data['sensors_to_read'] = result.get('sensors', [])
 
-        # Delete only after cloud confirmation
         image_path = self.current_test_data.get('image_path')
         if image_path:
             self._delete_image(image_path)
@@ -197,7 +326,6 @@ class AppController:
         self._proceed_to_reading()
 
     def _proceed_to_reading(self):
-        """Navigate to sensor reading screen and begin reading"""
         self.sm.current = 'reading'
         screen = self.sm.get_screen('reading')
         screen.set_sensors(self.current_test_data['sensors_to_read'])
@@ -208,7 +336,6 @@ class AppController:
     # ──────────────────────────────────────────────────
 
     def _read_voc_sensors(self):
-        """Read VOC + environment sensors, send CSV, get ML result"""
         sensors  = self.current_test_data.get('sensors_to_read', [])
         all_data = self.dm.hardware.read_all_sensor_data(sensors)
         csv_path = self.dm.hardware.generate_sensor_csv(all_data)
@@ -224,12 +351,10 @@ class AppController:
                         lambda dt: self._show_result(result), 0
                     )
                 else:
-                    print("[CONTROLLER] No ML result received from phone")
+                    print("[CONTROLLER] No ML result received")
             else:
-                print("[CONTROLLER] Failed to send CSV to phone")
+                print("[CONTROLLER] Failed to send CSV")
         else:
-            # Mock: generate a fake ML result
-            print("[CONTROLLER] Mock network - generating mock ML result")
             import random
             mock_result = {
                 'status':     random.choice(['Fresh', 'Moderate', 'Spoiled']),
@@ -237,7 +362,7 @@ class AppController:
                 'food_type':  self.current_test_data.get('food_type', 'Unknown'),
                 'details':    'Mock analysis result'
             }
-            time.sleep(1)  # Simulate processing
+            time.sleep(1)
             Clock.schedule_once(lambda dt: self._show_result(mock_result), 0)
 
     # ──────────────────────────────────────────────────
@@ -260,12 +385,6 @@ class AppController:
     # ──────────────────────────────────────────────────
 
     def _delete_image(self, image_path):
-        """
-        Delete image from Pi storage.
-        Called only after cloud confirms receipt via CNN result,
-        or in mock mode after simulated send.
-        CleanupManager handles any edge-case leftovers hourly.
-        """
         try:
             if os.path.exists(image_path):
                 os.remove(image_path)

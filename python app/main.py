@@ -26,7 +26,7 @@ class MiniKApp(App):
         super().__init__(**kwargs)
         from utils.device_manager import DeviceManager
         self.device_manager = DeviceManager()
-        self.controller = None
+        self.controller     = None
         self.screen_manager = None
 
     def build(self):
@@ -56,45 +56,18 @@ class MiniKApp(App):
         for screen in self.screen_manager.screens:
             screen.controller = self.controller
 
-        # ── Determine starting screen ──────────────────────
-        if self.device_manager.is_paired():
-            if config.USE_REAL_NETWORK:
-                # Show pairing screen while checking connection
-                self.screen_manager.current = 'pairing'
-                pairing = self.screen_manager.get_screen('pairing')
-                pairing.show_checking_connection()
-                Thread(target=self._verify_boot_connection, daemon=True).start()
-            else:
-                # Mock mode - skip check, go home
-                self.screen_manager.current = 'home'
-        else:
-            self.screen_manager.current = 'pairing'
+        # Always start on pairing screen
+        # Controller decides: auto-connect or show QR
+        self.screen_manager.current = 'pairing'
 
         return self.screen_manager
 
-    def _verify_boot_connection(self):
-        """Background boot connection verification"""
-        result = self.device_manager.verify_connection_on_boot()
-
-        if result is True:
-            Clock.schedule_once(
-                lambda dt: setattr(self.screen_manager, 'current', 'home'), 0
-            )
-        elif result == 'wifi_only':
-            def go_home_warn(dt):
-                self.screen_manager.current = 'home'
-                self.screen_manager.get_screen('home').show_warning(
-                    "Phone not reachable - check mobile app"
-                )
-            Clock.schedule_once(go_home_warn, 0)
-        else:
-            # Connection lost - force re-pair
-            Clock.schedule_once(
-                lambda dt: setattr(self.screen_manager, 'current', 'pairing'), 0
-            )
-
     def on_start(self):
         self.controller.on_app_start()
+        # Give hardware 1 second to init before pairing logic runs
+        Clock.schedule_once(
+            lambda dt: self.controller.start_pairing_screen(), 1
+        )
 
     def on_stop(self):
         self.controller.cleanup()
