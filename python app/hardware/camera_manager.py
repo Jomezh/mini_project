@@ -18,8 +18,8 @@ class CameraManager:
 
     PREVIEW_WIDTH  = 240
     PREVIEW_HEIGHT = 180
-    CAPTURE_WIDTH  = 1640
-    CAPTURE_HEIGHT = 1232
+    CAPTURE_WIDTH  = 2592
+    CAPTURE_HEIGHT = 1944
 
     def __init__(self):
         self.camera          = None
