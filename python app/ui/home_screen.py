@@ -70,7 +70,7 @@ class HomeScreen(Screen):
 
         self.start_test_btn = Button(
             text='Start Test',
-            size_hint=(1, 1),
+            size_hint=(1, .75),
             background_color=(0.2, 0.7, 0.3, 1),
             font_size='15sp'
         )
@@ -78,7 +78,7 @@ class HomeScreen(Screen):
 
         shutdown_btn = Button(
             text='Turn Off\nDevice',
-            size_hint=(1, 1),
+            size_hint=(1, .75),
             background_color=(0.7, 0.2, 0.2, 1),
             font_size='13sp',
             halign='center'
@@ -87,16 +87,16 @@ class HomeScreen(Screen):
 
         self.forget_btn = Button(
             text='Forget\nDevice',
-            size_hint=(1, 1),
+            size_hint=(1, .75),
             background_color=(0.5, 0.3, 0.1, 1),
             font_size='11sp',
             halign='center'
         )
         self.forget_btn.bind(on_press=self.on_forget_device)
-
-        button_box.add_widget(self.start_test_btn)
-        button_box.add_widget(shutdown_btn)
+        
         button_box.add_widget(self.forget_btn)
+        button_box.add_widget(self.start_test_btn)
+        button_box.add_widget(shutdown_btn)        
 
         # WiFi connection status bar
         self.status_label = Label(

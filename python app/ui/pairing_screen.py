@@ -70,7 +70,7 @@ class PairingScreen(Screen):
         # Button row
         btn_box = BoxLayout(
             orientation='horizontal',
-            size_hint=(1, 0.11),
+            size_hint=(1, 0.25),
             spacing=4
         )
 
@@ -121,7 +121,7 @@ class PairingScreen(Screen):
                 text='Reset All Pairings',
                 background_color=(0.4, 0.2, 0.2, 1),
                 font_size='9sp',
-                size_hint=(1, 0.08)
+                size_hint=(1, 0.2)
             )
             reset_btn.bind(on_press=self._on_reset_press)
             layout.add_widget(reset_btn)
