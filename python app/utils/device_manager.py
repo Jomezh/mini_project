@@ -111,15 +111,26 @@ class DeviceManager:
                 break
         self.config_data['known_devices'] = known
         self._write_config(self.config_data)
-
     def reset_pairing(self):
-        """Clear all known devices, keep device ID"""
-        if self.heartbeat:
-            self.heartbeat.stop()
-            self.heartbeat = None
-        self.config_data['known_devices'] = []
-        self._write_config(self.config_data)
-        print("[DEVICE] All pairing data cleared")
+       """Clear all known devices, keep device ID"""
+       if self.heartbeat:
+           self.heartbeat.stop()
+           self.heartbeat = None
+       self.config_data['known_devices'] = []
+       self._write_config(self.config_data)
+       print("[DEVICE] All pairing data cleared")
+
+    def forget_device(self):
+       self.reset_pairing()
+
+    '''def forget_device(self):
+       """Clear pairing info, revert to unpaired state"""
+       self.config.pop('paired', None)
+       self.config.pop('phone_address', None)
+       self.config.pop('ssid', None)
+       with open(self.CONFIG_FILE, 'w') as f:
+           json.dump(self.config, f, indent=2)
+       print("[DEVICE] Pairing forgotten.")'''
 
     def remove_device(self, ble_mac):
         """Remove a single device by BLE MAC"""

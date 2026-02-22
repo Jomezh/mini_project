@@ -1,6 +1,6 @@
 import os
 import sys
-from threading import Thread
+from threading import Thread, Event
 
 from kivy.app import App
 from kivy.uix.screenmanager import ScreenManager, FadeTransition
@@ -25,9 +25,10 @@ class MiniKApp(App):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         from utils.device_manager import DeviceManager
-        self.device_manager = DeviceManager()
-        self.controller     = None
-        self.screen_manager = None
+        self.device_manager    = DeviceManager()
+        self.controller        = None
+        self.screen_manager    = None
+        self._hw_ready         = Event()   # Signals when hardware init is done
 
     def build(self):
         from ui.pairing_screen   import PairingScreen
@@ -53,24 +54,65 @@ class MiniKApp(App):
             self.device_manager
         )
 
+        # Assign controller to ALL screens before any navigation
         for screen in self.screen_manager.screens:
             screen.controller = self.controller
 
         # Always start on pairing screen
-        # Controller decides: auto-connect or show QR
         self.screen_manager.current = 'pairing'
 
         return self.screen_manager
 
     def on_start(self):
-        self.controller.on_app_start()
-        # Give hardware 1 second to init before pairing logic runs
-        Clock.schedule_once(
-            lambda dt: self.controller.start_pairing_screen(), 1
-        )
+        # Start hardware init in background
+        Thread(target=self._init_hardware, daemon=True).start()
+
+        # Poll until hardware is ready, then start pairing logic
+        # Max wait 5 seconds - proceeds even if init is slow
+        Clock.schedule_interval(self._check_hw_ready, 0.2)
+
+    def _init_hardware(self):
+        """Hardware init in background thread"""
+        try:
+            self.controller.on_app_start()
+            self.device_manager.hardware.initialize()
+        except Exception as e:
+            import traceback
+            print(f"[MAIN] Hardware init error: {e}")
+            traceback.print_exc()
+        finally:
+            # Always signal ready so app doesn't hang
+            self._hw_ready.set()
+
+    def _check_hw_ready(self, dt):
+        """
+        Poll every 0.2s for hardware ready.
+        Starts pairing screen logic as soon as init completes.
+        Falls back after 5 seconds regardless.
+        """
+        if not hasattr(self, '_hw_wait_elapsed'):
+            self._hw_wait_elapsed = 0.0
+
+        self._hw_wait_elapsed += dt
+
+        hw_done     = self._hw_ready.is_set()
+        timed_out   = self._hw_wait_elapsed >= 5.0
+
+        if hw_done or timed_out:
+            if timed_out and not hw_done:
+                print("[MAIN] Hardware init timeout - proceeding anyway")
+
+            # Unschedule this poll
+            Clock.unschedule(self._check_hw_ready)
+
+            # Now safe to run pairing screen logic
+            self.controller.start_pairing_screen()
 
     def on_stop(self):
-        self.controller.cleanup()
+        try:
+            self.controller.cleanup()
+        except Exception as e:
+            print(f"[MAIN] Cleanup error: {e}")
         return True
 
 
