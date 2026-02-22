@@ -355,7 +355,7 @@ class AppController:
             )
         else:
             self.sm.current = 'capture'
-            self.sm.get_screen('capture').start_preview()
+            #self.sm.get_screen('capture').start_preview()
 
     def _check_voc_ready(self, dt):
         if self.dm.hardware.are_voc_sensors_ready():
@@ -363,7 +363,7 @@ class AppController:
                 self.priming_check_event.cancel()
             self.sm.get_screen('home').hide_waiting_message()
             self.sm.current = 'capture'
-            self.sm.get_screen('capture').start_preview()
+            #self.sm.get_screen('capture').start_preview()
 
     # ──────────────────────────────────────────────────
     # Capture Screen

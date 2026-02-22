@@ -29,35 +29,38 @@ class HomeScreen(Screen):
         )
 
         subtitle = Label(
-            text='VOC based food spoilage\ndetection system',
+            text='VOC based food spoilage\ndetection system',  # fixed \\n → \n
             font_size='11sp',
             color=(0.7, 0.7, 0.7, 1),
             size_hint=(1, 0.4),
-            halign='center'
+            halign='center',
+            valign='middle'
         )
         subtitle.bind(size=subtitle.setter('text_size'))
 
         title_box.add_widget(title)
         title_box.add_widget(subtitle)
 
-        # Connected device info
+        # Connected device name + SSID
         self.device_label = Label(
             text='',
             font_size='9sp',
             color=(0.4, 0.75, 0.4, 1),
             size_hint=(1, 0.08),
-            halign='center'
+            halign='center',
+            valign='middle'
         )
         self.device_label.bind(size=self.device_label.setter('text_size'))
 
-        # Status/Waiting message
+        # Waiting for sensors message
         self.waiting_label = Label(
             text='',
             font_size='12sp',
             color=(1, 0.7, 0.3, 1),
             size_hint=(1, 0.15),
             opacity=0,
-            halign='center'
+            halign='center',
+            valign='middle'
         )
         self.waiting_label.bind(size=self.waiting_label.setter('text_size'))
 
@@ -68,37 +71,37 @@ class HomeScreen(Screen):
             spacing=10
         )
 
+        self.forget_btn = Button(
+            text='Forget\nDevice',          # fixed \\n → \n
+            size_hint=(1, 1),
+            background_color=(0.5, 0.3, 0.1, 1),
+            font_size='11sp',
+            halign='center'
+        )
+        self.forget_btn.bind(on_press=self.on_forget_device)
+
         self.start_test_btn = Button(
             text='Start Test',
-            size_hint=(1, .75),
+            size_hint=(1, 1),
             background_color=(0.2, 0.7, 0.3, 1),
             font_size='15sp'
         )
         self.start_test_btn.bind(on_press=self.on_start_test)
 
         shutdown_btn = Button(
-            text='Turn Off\nDevice',
-            size_hint=(1, .75),
+            text='Turn Off\nDevice',        # fixed \\n → \n
+            size_hint=(1, 1),
             background_color=(0.7, 0.2, 0.2, 1),
             font_size='13sp',
             halign='center'
         )
         shutdown_btn.bind(on_press=self.on_shutdown)
 
-        self.forget_btn = Button(
-            text='Forget\nDevice',
-            size_hint=(1, .75),
-            background_color=(0.5, 0.3, 0.1, 1),
-            font_size='11sp',
-            halign='center'
-        )
-        self.forget_btn.bind(on_press=self.on_forget_device)
-        
         button_box.add_widget(self.forget_btn)
         button_box.add_widget(self.start_test_btn)
-        button_box.add_widget(shutdown_btn)        
+        button_box.add_widget(shutdown_btn)
 
-        # WiFi connection status bar
+        # WiFi status bar
         self.status_label = Label(
             text='Connected via WiFi',
             font_size='10sp',
@@ -137,20 +140,17 @@ class HomeScreen(Screen):
     # ── Public Methods ─────────────────────────────────
 
     def set_connected_device(self, ble_name, ssid=''):
-        """Called by controller after successful connection"""
         if ssid:
             self.device_label.text = f'{ble_name}  •  {ssid}'
         else:
             self.device_label.text = f'{ble_name}'
 
     def show_waiting_message(self):
-        """Show waiting for VOC sensors message"""
-        self.waiting_label.text      = 'Waiting for VOC sensors\nto heat up...'
+        self.waiting_label.text      = 'Waiting for VOC sensors\nto heat up...'  # fixed
         self.waiting_label.opacity   = 1
         self.start_test_btn.disabled = True
 
     def hide_waiting_message(self):
-        """Hide waiting message"""
         self.waiting_label.opacity   = 0
         self.start_test_btn.disabled = False
 
