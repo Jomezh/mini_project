@@ -1,284 +1,249 @@
 import time
-import csv
-import os
-from datetime import datetime
-
-try:
-    import busio
-    import digitalio
-    import board
-    from adafruit_mcp3xxx.mcp3008 import MCP3008
-    from adafruit_mcp3xxx.analog_in import AnalogIn
-    import adafruit_dht  # DHT11 library
-    HAS_HARDWARE = True
-except ImportError:
-    HAS_HARDWARE = False
-    print("Warning: Hardware libraries not available. Running in simulation mode.")
+import random
+import config
 
 
-class SensorManager:
-    """Manages MQ VOC sensors via dual MCP3008 ADCs + DHT11 temp/humidity"""
-    
-    # MQ sensor heating time (seconds)
-    HEATING_TIME = 180  # 3 minutes for MQ sensors to stabilize
-    STABILITY_THRESHOLD = 0.05  # 5% variation for stability
-    
-    # NOTE: DHT11_PIN moved to __init__ to avoid hardware access at class level
-    
-    # Sensor pin mapping (same as before)
-    SENSOR_MAP = {
-        # First MCP3008 (chip 0)
-        'MQ2': (0, 0),   # Combustible gases, smoke
-        'MQ3': (0, 1),   # Alcohol, ethanol
-        'MQ4': (0, 2),   # Methane, CNG
-        'MQ5': (0, 3),   # LPG, natural gas
-        'MQ6': (0, 4),   # LPG, butane
-        'MQ7': (0, 5),   # Carbon monoxide
-        'MQ8': (0, 6),   # Hydrogen
-        'MQ9': (0, 7),   # CO, combustible gases
-        
-        # Second MCP3008 (chip 1)
-        'MQ135': (1, 0), # Air quality
-        'MQ136': (1, 1), # Hydrogen sulfide
-        'MQ137': (1, 2), # Ammonia
-        'MQ138': (1, 3), # Benzene, toluene
-    }
-    
-    VREF = 3.3
-    
-    def __init__(self):
-        self.initialized = False
-        self.heating_start_time = None
-        self.is_heating = False
-        self.mcp_chips = []
-        self.channels = {}
-        self.baseline_readings = {}
-        
-        # DHT11 sensor - initialize only if hardware available
-        self.dht_device = None
-        self.dht_pin = None
-        self.last_temp = None
-        self.last_humidity = None
-        
-        # Set DHT11 pin only if hardware is available
-        if HAS_HARDWARE:
-            try:
-                self.dht_pin = board.D4  # GPIO 4 by default
-            except:
-                self.dht_pin = None
-        
-    def initialize(self):
-        """Initialize SPI (MCP3008) and GPIO (DHT11)"""
-        if not HAS_HARDWARE:
-            self.initialized = True
-            print("Running in simulation mode (no hardware)")
-            return
-        
-        try:
-            # Initialize MCP3008 chips
-            spi = busio.SPI(clock=board.SCK, MISO=board.MISO, MOSI=board.MOSI)
-            cs0 = digitalio.DigitalInOut(board.CE0)
-            cs1 = digitalio.DigitalInOut(board.CE1)
-            
-            mcp0 = MCP3008(spi, cs0)
-            mcp1 = MCP3008(spi, cs1)
-            self.mcp_chips = [mcp0, mcp1]
-            
-            # Setup VOC sensor channels
-            for sensor_name, (chip_num, channel_num) in self.SENSOR_MAP.items():
-                if chip_num < len(self.mcp_chips):
-                    chip = self.mcp_chips[chip_num]
-                    channel = AnalogIn(chip, getattr(MCP3008, f'P{channel_num}'))
-                    self.channels[sensor_name] = channel
-            
-            # Initialize DHT11 (only if pin was set)
-            if self.dht_pin:
-                self.dht_device = adafruit_dht.DHT11(self.dht_pin)
-            
-            self.initialized = True
-            print(f"Sensor manager initialized:")
-            print(f"  - {len(self.mcp_chips)} MCP3008 chips")
-            print(f"  - {len(self.channels)} VOC sensors")
-            if self.dht_device:
-                print(f"  - DHT11 on GPIO {self.dht_pin}")
-            
-        except Exception as e:
-            print(f"Error initializing sensors: {e}")
-            self.initialized = False
-    
-    def read_environment(self):
-        """Read temperature and humidity from DHT11"""
-        if not HAS_HARDWARE or not self.dht_device:
-            # Simulation mode
-            import random
-            return {
-                'temperature': round(random.uniform(20, 30), 1),
-                'humidity': round(random.uniform(40, 70), 1),
-                'timestamp': datetime.now().isoformat()
+class MockNetworkManager:
+    """
+    Simulates all BLE/WiFi states.
+    BLE (device nearby) and hotspot (WiFi available) are independent flags.
+
+    config.MOCK_BLE_DEVICE_FOUND:
+        True  → scan finds phone → proceeds to WiFi connect
+        False → scan finds nothing → QR screen shown
+
+    config.MOCK_HOTSPOT_ON:
+        True  → WiFi connect succeeds
+        False → hotspot off → retry prompt shown, BLE notified
+    """
+
+    def __init__(self, device_id):
+        self.device_id = device_id
+        self.mode      = 'ble'
+
+    # ── BLE ─────────────────────────────────────────────
+
+    def start_advertising(self):
+        return self.start_ble_advertising()
+
+    def start_ble_advertising(self):
+        ble_name = f"MiniK-{self.device_id[-6:]}"
+        print(f"[MOCK BLE] Advertising as '{ble_name}' "
+              f"(overrides system hostname)")
+        return True
+
+    def scan_for_devices(self, known_macs, known_names, timeout=10):
+        """
+        Simulate BLE scan.
+        Returns found device dict if MOCK_BLE_DEVICE_FOUND=True and list non-empty.
+        Returns None if MOCK_BLE_DEVICE_FOUND=False → triggers QR screen.
+        """
+        print(f"[MOCK BLE] Scanning ({timeout}s) for "
+              f"{len(known_macs)} known device(s)...")
+        time.sleep(min(2, timeout))  # Simulate scan duration
+
+        if known_macs and config.MOCK_BLE_DEVICE_FOUND:
+            found = {
+                'mac':  known_macs[0],
+                'name': known_names[0] if known_names else 'MockPhone'
             }
-        
-        try:
-            temperature = self.dht_device.temperature
-            humidity = self.dht_device.humidity
-            
-            # Cache valid readings (DHT11 can be flaky)
-            if temperature is not None:
-                self.last_temp = temperature
-            if humidity is not None:
-                self.last_humidity = humidity
-            
-            return {
-                'temperature': round(temperature if temperature else self.last_temp, 1),
-                'humidity': round(humidity if humidity else self.last_humidity, 1),
-                'timestamp': datetime.now().isoformat()
-            }
-            
-        except RuntimeError as e:
-            # DHT11 often needs retry
-            print(f"DHT11 read error (will retry): {e}")
-            return {
-                'temperature': self.last_temp or 25.0,
-                'humidity': self.last_humidity or 50.0,
-                'timestamp': datetime.now().isoformat(),
-                'error': 'retry'
-            }
-    
-    def read_sensors(self, sensor_list):
-        """Read specified VOC sensors"""
-        readings = {}
-        
-        if HAS_HARDWARE and self.initialized:
-            for sensor in sensor_list:
-                if sensor in self.channels:
-                    try:
-                        channel = self.channels[sensor]
-                        voltage = channel.voltage
-                        raw_value = channel.value
-                        ppm = self._voltage_to_ppm(sensor, voltage)
-                        resistance_ratio = self._calculate_resistance_ratio(voltage)
-                        
-                        readings[sensor] = {
-                            'voltage': round(voltage, 3),
-                            'raw': raw_value,
-                            'ppm': round(ppm, 2),
-                            'resistance_ratio': round(resistance_ratio, 3),
-                            'timestamp': datetime.now().isoformat()
-                        }
-                        
-                    except Exception as e:
-                        print(f"Error reading {sensor}: {e}")
-                        readings[sensor] = {
-                            'voltage': 0,
-                            'raw': 0,
-                            'ppm': 0,
-                            'error': str(e)
-                        }
+            print(f"[MOCK BLE] Found: {found['name']} ({found['mac']})")
+            return found
+
+        if not config.MOCK_BLE_DEVICE_FOUND:
+            print("[MOCK BLE] No devices found "
+                  "(MOCK_BLE_DEVICE_FOUND=False → QR screen)")
         else:
-            # Simulation mode
-            import random
-            for sensor in sensor_list:
-                readings[sensor] = {
-                    'voltage': round(random.uniform(0.5, 3.0), 3),
-                    'raw': random.randint(150, 900),
-                    'ppm': round(random.uniform(10, 1000), 2),
-                    'resistance_ratio': round(random.uniform(0.5, 3.0), 3),
-                    'timestamp': datetime.now().isoformat()
-                }
-        
-        return readings
-    
-    def read_all_data(self, sensor_list):
-        """Read VOC sensors + environmental data together"""
-        # Read environment first
-        env_data = self.read_environment()
-        
-        # Read VOC sensors
-        voc_data = self.read_sensors(sensor_list)
-        
-        # Combine
-        return {
-            'environment': env_data,
-            'voc_sensors': voc_data,
-            'timestamp': datetime.now().isoformat()
+            print("[MOCK BLE] No known devices in list")
+        return None
+
+    def wait_for_pairing(self):
+        """
+        Simulate phone scanning QR and sending credentials via BLE GATT.
+        In real mode: phone writes to SSID/PASSWORD/MAC characteristics.
+        ble_mac here is the PHONE's MAC - Pi saves this for future reconnect scans.
+        """
+        print("[MOCK BLE] Waiting for phone to connect and send credentials...")
+        time.sleep(3)
+        credentials = {
+            'ble_name':      'MockPhone-AB12',
+            'ble_mac':       'AA:BB:CC:DD:EE:FF',   # Phone's MAC (not Pi's)
+            'ssid':          'MockHotspot',
+            'password':      'mockpass123',
+            'phone_address': '192.168.43.1'
         }
-    
-    def start_priming(self):
-        """Start sensor heating/priming"""
-        if not self.is_heating:
-            self.heating_start_time = time.time()
-            self.is_heating = True
-            print("VOC sensor priming started")
-    
-    def are_ready(self):
-        """Check if sensors are ready"""
-        if not self.is_heating or not self.heating_start_time:
+        print(f"[MOCK BLE] Credentials received from {credentials['ble_name']}: "
+              f"SSID='{credentials['ssid']}'")
+        return credentials
+
+    def send_ip_to_phone(self, ip_address):
+        """
+        In real mode: Pi writes IP to GATT IP characteristic.
+        Phone reads it → saves for WiFi comms.
+        """
+        print(f"[MOCK BLE] Pi IP sent to phone: {ip_address}")
+        return True
+
+    def notify_enable_hotspot(self):
+        """
+        In real mode: Pi writes to GATT STATUS characteristic.
+        Phone app receives notification → shows "Enable hotspot" alert.
+        Mock: just logs it.
+        """
+        print("[MOCK BLE] ← Notified phone via BLE: please enable your hotspot")
+        return True
+
+    def stop(self):
+        print("[MOCK BLE] BLE advertising/connection stopped")
+
+    # ── WiFi / Hotspot ───────────────────────────────────
+
+    def connect(self, ssid, password=None):
+        """
+        Simulate hotspot connect via nmcli.
+        password=None → nmcli uses saved credentials (reconnect flow).
+        password=str  → new credentials (fresh pair flow).
+        Respects config.MOCK_HOTSPOT_ON.
+        """
+        if password:
+            print(f"[MOCK WIFI] Connecting to hotspot: '{ssid}' "
+                  f"(new credentials)...")
+        else:
+            print(f"[MOCK WIFI] Connecting to hotspot: '{ssid}' "
+                  f"(saved credentials)...")
+        time.sleep(1.5)  # Simulate nmcli delay
+
+        if config.MOCK_HOTSPOT_ON:
+            self.mode = 'wifi'
+            print(f"[MOCK WIFI] Connected to '{ssid}' ✓")
+            return True
+        else:
+            print(f"[MOCK WIFI] Hotspot '{ssid}' not reachable "
+                  f"(MOCK_HOTSPOT_ON=False)")
             return False
-        
-        elapsed = time.time() - self.heating_start_time
-        return elapsed >= self.HEATING_TIME
-    
-    def _voltage_to_ppm(self, sensor, voltage):
-        """Convert voltage to PPM (placeholder - needs calibration)"""
-        # This is a simplified conversion
-        # Real implementation needs sensor-specific calibration curves
-        return voltage * 100
-    
-    def _calculate_resistance_ratio(self, voltage):
-        """Calculate Rs/R0 ratio"""
-        if voltage <= 0:
-            return 0
-        # Simplified calculation
-        return (self.VREF - voltage) / voltage
-    
-    def generate_csv(self, sensor_data):
-        """Generate CSV file from sensor readings (including environment)"""
+
+    def get_local_ip(self):
+        ip = '192.168.43.100'
+        print(f"[MOCK WIFI] Local IP: {ip}")
+        return ip
+
+    def start_server(self):
+        print("[MOCK WIFI] Flask server started on :8765")
+
+    def send_image(self, image_path):
+        print(f"[MOCK WIFI] Sending image: {image_path}")
+        time.sleep(0.5)
+        print("[MOCK WIFI] Image sent ✓")
+        return True
+
+    def send_file(self, file_path):
+        print(f"[MOCK WIFI] Sending CSV: {file_path}")
+        time.sleep(0.3)
+        print("[MOCK WIFI] CSV sent ✓")
+        return True
+
+    def wait_for_message(self, message_type):
+        print(f"[MOCK WIFI] Waiting for {message_type} from phone...")
+        time.sleep(2)
+
+        if message_type == 'cnn_result':
+            result = {
+                'food_type':  random.choice(['Fish', 'Chicken', 'Beef', 'Pork']),
+                'sensors':    ['MQ2', 'MQ3', 'MQ135'],
+                'confidence': round(random.uniform(80, 99), 1)
+            }
+            print(f"[MOCK WIFI] CNN result: {result['food_type']} "
+                  f"({result['confidence']}%)")
+            return result
+
+        if message_type == 'ml_result':
+            result = {
+                'status':     random.choice(['Fresh', 'Moderate', 'Spoiled']),
+                'confidence': round(random.uniform(75, 99), 1),
+                'food_type':  'Unknown',
+                'details':    'Mock ML result'
+            }
+            print(f"[MOCK WIFI] ML result: {result['status']} "
+                  f"({result['confidence']}%)")
+            return result
+
+        return None
+
+
+class MockCameraManager:
+
+    def initialize(self):
+        print("[MOCK CAM] Initialized")
+
+    def start_preview(self):
+        print("[MOCK CAM] Preview started")
+
+    def stop_preview(self):
+        print("[MOCK CAM] Preview stopped")
+
+    def get_preview_texture(self):
+        # Returns None - capture screen handles this gracefully
+        return None
+
+    def capture_image(self):
+        import os
+        from datetime import datetime
+        base_dir     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        captures_dir = os.path.join(base_dir, 'captures')
+        os.makedirs(captures_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"/tmp/sensor_data_{timestamp}.csv"
-        
-        try:
-            with open(filename, 'w', newline='') as csvfile:
-                # Check if environment data is present
-                if 'environment' in sensor_data and 'voc_sensors' in sensor_data:
-                    env = sensor_data['environment']
-                    voc = sensor_data['voc_sensors']
-                    
-                    # Headers: Temperature, Humidity, then each VOC sensor
-                    fieldnames = ['Temperature', 'Humidity'] + list(voc.keys())
-                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                    writer.writeheader()
-                    
-                    # Data row
-                    row = {
-                        'Temperature': env['temperature'],
-                        'Humidity': env['humidity']
-                    }
-                    row.update({sensor: data['ppm'] for sensor, data in voc.items()})
-                    writer.writerow(row)
-                else:
-                    # Legacy format (just VOC sensors)
-                    fieldnames = list(sensor_data.keys())
-                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                    writer.writeheader()
-                    row = {sensor: data['ppm'] for sensor, data in sensor_data.items()}
-                    writer.writerow(row)
-            
-            print(f"CSV generated: {filename}")
-            return filename
-            
-        except Exception as e:
-            print(f"Error generating CSV: {e}")
-            return None
-    
+        path = os.path.join(captures_dir, f"mock_capture_{timestamp}.jpg")
+        open(path, 'w').close()   # Empty placeholder file
+        print(f"[MOCK CAM] Captured: {path}")
+        return path
+
     def cleanup(self):
-        """Cleanup resources"""
-        self.is_heating = False
-        self.channels.clear()
-        self.mcp_chips.clear()
-        
-        if self.dht_device:
-            try:
-                self.dht_device.exit()
-            except:
-                pass
-        
-        print("Sensor manager cleaned up")
+        print("[MOCK CAM] Cleanup")
+
+
+class MockSensorManager:
+
+    def initialize(self):
+        print("[MOCK SENSORS] Initialized")
+
+    def start_priming(self):
+        print("[MOCK SENSORS] Priming started (mock - instant ready)")
+
+    def are_ready(self):
+        return True  # Mock sensors always ready instantly
+
+    def read_all_data(self, sensor_list):
+        data = {
+            'temperature': round(random.uniform(20, 35), 1),
+            'humidity':    round(random.uniform(40, 80), 1),
+            'sensors':     {}
+        }
+        for sensor in sensor_list:
+            data['sensors'][sensor] = round(random.uniform(100, 900), 2)
+        print(f"[MOCK SENSORS] Read: temp={data['temperature']}°C  "
+              f"hum={data['humidity']}%  "
+              f"VOC={data['sensors']}")
+        return data
+
+    def generate_csv(self, data):
+        import os
+        from datetime import datetime
+        base_dir  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_dir  = os.path.join(base_dir, 'data')
+        os.makedirs(data_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(data_dir, f"sensors_{timestamp}.csv")
+        with open(path, 'w') as f:
+            f.write("timestamp,temperature,humidity")
+            for s in data.get('sensors', {}):
+                f.write(f",{s}")
+            f.write("\n")
+            f.write(f"{timestamp},{data['temperature']},{data['humidity']}")
+            for v in data.get('sensors', {}).values():
+                f.write(f",{v}")
+            f.write("\n")
+        print(f"[MOCK SENSORS] CSV saved: {path}")
+        return path
+
+    def cleanup(self):
+        print("[MOCK SENSORS] Cleanup")

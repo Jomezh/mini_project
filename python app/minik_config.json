@@ -3,13 +3,5 @@
   "paired": true,
   "ssid": "MockWiFi",
   "phone_address": "192.168.1.100",
-  "known_devices": [
-    {
-      "ble_name": "MockPhone-AB12",
-      "ble_mac": "AA:BB:CC:DD:EE:FF",
-      "ssid": "MockHotspot",
-      "phone_address": "192.168.43.1",
-      "last_connected": "2026-02-22T15:59:06.607590"
-    }
-  ]
+  "known_devices": []
 }
