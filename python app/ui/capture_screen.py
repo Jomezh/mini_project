@@ -13,7 +13,7 @@ class CaptureScreen(Screen):
         super().__init__(**kwargs)
         self.controller         = None
         self.preview_event      = None
-        self._preview_scheduled = False  # Guard: FadeTransition fires on_enter twice
+        self._preview_scheduled = False  # Guard: prevents double start on FadeTransition
         self._build_ui()
 
     def _build_ui(self):
@@ -66,22 +66,20 @@ class CaptureScreen(Screen):
         layout.add_widget(self.preview)
         layout.add_widget(button_box)
         layout.add_widget(self.status_label)
-
         self.add_widget(layout)
 
     # ── Lifecycle ──────────────────────────────────────
 
     def on_enter(self):
-        # Always reset button state on enter — handles returning from result screen
+        # Always reset button — fixes stuck state when returning from result screen
         self.enable_capture()
 
-        # Guard prevents double start from FadeTransition firing on_enter twice
         if not self._preview_scheduled:
             self._preview_scheduled = True
             Clock.schedule_once(lambda dt: self.start_preview(), 0.3)
 
     def on_leave(self):
-        self._preview_scheduled = False  # Reset so next on_enter works
+        self._preview_scheduled = False  # Reset so next on_enter re-arms
         self.stop_preview()
 
     # ── Camera Preview ─────────────────────────────────
@@ -97,7 +95,7 @@ class CaptureScreen(Screen):
         try:
             self.controller.dm.hardware.start_camera_preview()
             self.preview_event = Clock.schedule_interval(
-                self.update_preview, 1.0 / 10  # 10 FPS — enough for Pi Zero 2W
+                self.update_preview, 1.0 / 10  # 10 FPS — fine for Pi Zero 2W
             )
             self.status_label.text  = 'Position food item in frame'
             self.status_label.color = (0.7, 0.7, 0.7, 1)
@@ -135,51 +133,15 @@ class CaptureScreen(Screen):
     def on_capture(self, instance):
         if not self.controller:
             return
-        # Disable immediately to block double-tap
-        self.capture_btn.disabled = True
-        self.status_label.text    = 'Capturing...'
-        self.status_label.color   = (0.9, 0.9, 0.9, 1)
+        # Defer 1 frame so Kivy redraws button release before blocking work starts
+        Clock.schedule_once(lambda dt: self._trigger_capture(), 0.1)
 
-        # Defer 1 frame so Kivy redraws button release state before blocking work
-        Clock.schedule_once(lambda dt: self._do_capture(), 0.1)
-
-    def _do_capture(self):
-        """Stop preview then hand off to controller in a background thread."""
+    def _trigger_capture(self):
         self.stop_preview()
-        threading.Thread(target=self._capture_worker, daemon=True).start()
-
-    def _capture_worker(self):
-        """Blocking capture runs in background — never touch widgets directly."""
-        try:
-            # controller.capture_image() is the existing method — reuse it
-            # but we own the button state here, not the controller
-            image_path = self.controller.dm.hardware.capture_image()
-            if image_path:
-                Clock.schedule_once(
-                    lambda dt: self._on_capture_success(image_path), 0
-                )
-            else:
-                Clock.schedule_once(
-                    lambda dt: self.show_error('Capture failed — try again'), 0
-                )
-                Clock.schedule_once(lambda dt: self._after_capture(), 0.5)
-        except Exception as e:
-            Clock.schedule_once(
-                lambda dt: self.show_error(f'Error: {e}'), 0
-            )
-            Clock.schedule_once(lambda dt: self._after_capture(), 0.5)
-
-    def _on_capture_success(self, image_path):
-        """Runs on main thread after successful capture."""
-        self.status_label.text  = 'Image captured!'
-        self.status_label.color = (0.3, 1, 0.3, 1)
-        # Delegate rest of flow (send to phone / mock) to controller
-        self.controller.on_image_captured(image_path)
-
-    def _after_capture(self):
-        """Always re-enable button and restart preview — failure recovery path."""
-        self.enable_capture()
-        self.start_preview()
+        self.status_label.text  = 'Capturing...'
+        self.status_label.color = (0.9, 0.9, 0.9, 1)
+        # controller.capture_image() is already threaded — call it directly
+        self.controller.capture_image()
 
     def on_back(self, instance):
         self.stop_preview()
@@ -200,3 +162,4 @@ class CaptureScreen(Screen):
     def show_error(self, message):
         self.status_label.text  = message
         self.status_label.color = (1, 0.3, 0.3, 1)
+        self.enable_capture()
