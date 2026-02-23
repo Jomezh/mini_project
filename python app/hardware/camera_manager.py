@@ -29,22 +29,13 @@ class CameraManager:
         self._lock           = threading.Lock()
         self._initialized    = False
         self._capturing      = False
-        self._starting       = False  # Atomic guard — FadeTransition fires on_enter twice
-
-    def _force_reset(self):
-        """Kill stale /dev/video0 handle from previous run."""
-        try:
-            subprocess.run(["sudo", "fuser", "-k", "/dev/video0"],
-                           capture_output=True)
-            time.sleep(1.5)
-        except Exception as e:
-            print(f"[CAMERA] Reset warning: {e}")
+        self._starting       = False  # Atomic guard against double start_preview()
 
     def initialize(self):
         """
-        Lightweight init only — marks hardware available.
-        Picamera2() is created in start_preview()/capture_image()
-        so there is zero gap between open and start (matches working test).
+        Lightweight marker only — no Picamera2() here.
+        Camera is opened atomically inside start_preview() / capture_image()
+        so there is zero idle time between open and start.
         """
         if not HAS_CAMERA:
             print("[CAMERA] Simulation mode (picamera2 not found)")
@@ -60,18 +51,21 @@ class CameraManager:
         if self.preview_active or self._starting:
             print("[CAMERA] Preview already active/starting — skipped")
             return
-
         self._starting = True
-        try:
-            # _force_reset + Picamera2() + configure + start in one atomic sequence
-            # This mirrors camera_preview.py which worked — no gap between open and start
-            self._force_reset()
-            self.camera = Picamera2()
+        # Run all blocking camera work in background — never block Kivy main thread
+        threading.Thread(target=self._start_preview_worker, daemon=True).start()
 
+    def _start_preview_worker(self):
+        """
+        Background thread: open + configure + start camera atomically.
+        No sleep() here — Picamera2() itself waits for the sensor to be ready.
+        """
+        try:
+            self.camera = Picamera2()
             cfg = self.camera.create_preview_configuration(
                 main={'size': (self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT),
                       'format': 'RGB888'},
-                buffer_count=4   # 4 buffers — matches working standalone test
+                buffer_count=4
             )
             self.camera.configure(cfg)
             self.camera.start()
@@ -124,7 +118,7 @@ class CameraManager:
                 return texture
         except Exception as e:
             print(f"[CAMERA] Frame error: {e}")
-            return self.current_texture
+            return self.current_texture  # Return last good frame on error
 
     # ── Capture ────────────────────────────────────────
 
@@ -146,20 +140,18 @@ class CameraManager:
 
         try:
             if was_previewing:
-                self.stop_preview()      # Also closes camera + nullifies self.camera
-                time.sleep(1.5)          # i2c bus release
+                self.stop_preview()
+                time.sleep(0.5)   # Brief pause for sensor to fully release
 
-            # Create fresh Picamera2 atomically right before capture
-            self._force_reset()
+            # Open fresh Picamera2 atomically right before capture
             self.camera = Picamera2()
-
             cfg = self.camera.create_still_configuration(
                 main={'size': (self.CAPTURE_WIDTH, self.CAPTURE_HEIGHT),
                       'format': 'RGB888'}
             )
             self.camera.configure(cfg)
             self.camera.start()
-            time.sleep(2)                # Auto-exposure settle
+            time.sleep(2)         # Auto-exposure settle
             self.camera.capture_file(filename)
             self.camera.stop()
             self.camera.close()
@@ -200,4 +192,3 @@ class CameraManager:
                 print(f"[CAMERA] Close error: {e}")
         self.camera       = None
         self._initialized = False
-        print("[CAMERA] Cleanup complete")
