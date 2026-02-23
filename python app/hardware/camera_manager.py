@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+import subprocess
 from datetime import datetime
 
 try:
@@ -29,11 +30,21 @@ class CameraManager:
         self._initialized    = False
         self._capturing      = False
 
+    def _force_reset(self):
+        """Force-release any stale camera handle from previous runs."""
+        try:
+            subprocess.run(["sudo", "fuser", "-k", "/dev/video0"],
+                           capture_output=True)
+            time.sleep(1.5)  # Wait for i2c bus to fully release
+        except Exception as e:
+            print(f"[CAMERA] Reset warning: {e}")
+
     def initialize(self):
         if not HAS_CAMERA:
             print("[CAMERA] Simulation mode (picamera2 not found)")
             return
         try:
+            self._force_reset()
             self.camera       = Picamera2()
             self._initialized = True
             print("[CAMERA] Initialized")
@@ -45,10 +56,19 @@ class CameraManager:
     # ── Preview ────────────────────────────────────────
 
     def start_preview(self):
-        if not HAS_CAMERA or not self._initialized or self.camera is None:
+        if not HAS_CAMERA:
             return
         if self.preview_active:
             return
+
+        # Re-initialize if camera was closed (e.g. after stop_preview)
+        if self.camera is None or not self._initialized:
+            self.initialize()
+
+        if not self._initialized:
+            print("[CAMERA] Cannot start preview — init failed")
+            return
+
         try:
             cfg = self.camera.create_preview_configuration(
                 main={'size': (self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT),
@@ -58,7 +78,7 @@ class CameraManager:
             self.camera.configure(cfg)
             self.camera.start()
             self.preview_active = True
-            print("[CAMERA] Preview started")
+            print("[CAPTURE] Preview started")
         except Exception as e:
             print(f"[CAMERA] Preview start error: {e}")
             self.preview_active = False
@@ -69,11 +89,17 @@ class CameraManager:
         try:
             if self.preview_active:
                 self.camera.stop()
-                self.preview_active  = False
-                self.current_texture = None
-                print("[CAMERA] Preview stopped")
+            self.camera.close()         # Fully release camera handle
+            self.camera        = None   # Nullify so next start re-opens cleanly
+            self._initialized  = False
+            self.preview_active  = False
+            self.current_texture = None
+            print("[CAMERA] Preview stopped")
         except Exception as e:
             print(f"[CAMERA] Preview stop error: {e}")
+            self.camera       = None
+            self._initialized = False
+            self.preview_active = False
 
     def get_preview_texture(self):
         if not HAS_CAMERA or not self.preview_active or self.camera is None:
@@ -83,10 +109,10 @@ class CameraManager:
                 frame    = self.camera.capture_array("main")
                 h, w, _  = frame.shape
 
-                # OV5647 outputs BGR - flip to RGB for correct colours
+                # OV5647 outputs BGR — flip to RGB for correct colours
                 frame_rgb = frame[:, :, ::-1].copy()
 
-                # Kivy uses bottom-left origin - flip vertically
+                # Kivy uses bottom-left origin — flip vertically
                 flipped   = frame_rgb[::-1, :, :]
 
                 texture = Texture.create(size=(w, h), colorfmt='rgb')
@@ -98,7 +124,7 @@ class CameraManager:
                 return texture
         except Exception as e:
             print(f"[CAMERA] Frame error: {e}")
-            return self.current_texture   # Return last good frame
+            return self.current_texture  # Return last good frame on error
 
     # ── Capture ────────────────────────────────────────
 
@@ -121,7 +147,12 @@ class CameraManager:
         try:
             if was_previewing:
                 self.stop_preview()
-                time.sleep(0.5)   # Let camera fully stop
+                time.sleep(1.5)  # Wait for i2c bus to fully release
+
+            # Re-initialize for still capture
+            self.initialize()
+            if not self._initialized:
+                raise RuntimeError("Camera re-init failed before capture")
 
             cfg = self.camera.create_still_configuration(
                 main={'size': (self.CAPTURE_WIDTH, self.CAPTURE_HEIGHT),
@@ -129,9 +160,12 @@ class CameraManager:
             )
             self.camera.configure(cfg)
             self.camera.start()
-            time.sleep(2)           # Auto-exposure settle
+            time.sleep(2)  # Auto-exposure settle
             self.camera.capture_file(filename)
             self.camera.stop()
+            self.camera.close()
+            self.camera       = None
+            self._initialized = False
 
             print(f"[CAMERA] Captured: {filename}")
             return filename
@@ -139,9 +173,13 @@ class CameraManager:
         except Exception as e:
             print(f"[CAMERA] Capture error: {e}")
             try:
-                self.camera.stop()
+                if self.camera:
+                    self.camera.stop()
+                    self.camera.close()
             except Exception:
                 pass
+            self.camera       = None
+            self._initialized = False
             return None
 
         finally:
@@ -149,18 +187,19 @@ class CameraManager:
             if was_previewing:
                 try:
                     self.start_preview()
-                except Exception:
-                    pass
+                except Exception as ex:
+                    print(f"[CAMERA] Preview restart failed: {ex}")
 
     # ── Cleanup ────────────────────────────────────────
 
     def cleanup(self):
         if self.preview_active:
             self.stop_preview()
-        if self.camera is not None:
+        elif self.camera is not None:
             try:
                 self.camera.close()
                 print("[CAMERA] Closed")
             except Exception as e:
                 print(f"[CAMERA] Close error: {e}")
+        self.camera       = None
         self._initialized = False
