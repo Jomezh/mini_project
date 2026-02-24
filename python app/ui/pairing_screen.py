@@ -49,7 +49,7 @@ class PairingScreen(Screen):
         )
 
         self.qr_image = Image(
-            size_hint=(1, 0.75),
+            size_hint=(1, 1),
             allow_stretch=True,
             keep_ratio=True,
             opacity=1
@@ -67,7 +67,7 @@ class PairingScreen(Screen):
             text='Look for\nmy Phone',
             background_color=(0.15, 0.55, 0.15, 1),
             font_size='10sp',
-            size_hint=(1, 0.10),
+            size_hint=(1, 0.25),
             halign='center'
         )
         self.action_btn.bind(on_press=self._on_action_btn)
@@ -75,6 +75,7 @@ class PairingScreen(Screen):
         # Bottom row
         btn_row = BoxLayout(
             orientation='horizontal',
+            size_hint=(1, 0.25),
             spacing=5
         )
 
