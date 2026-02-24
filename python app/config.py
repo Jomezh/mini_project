@@ -6,7 +6,7 @@ import os
 USE_REAL_SENSORS  = False
 USE_REAL_DHT11    = False
 USE_REAL_CAMERA   = True
-USE_REAL_NETWORK  = False
+USE_REAL_NETWORK  = True
 SHOW_RESET_BUTTON = True
 
 # ── Mock simulation flags ────────────────────
