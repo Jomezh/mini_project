@@ -67,7 +67,7 @@ class PairingScreen(Screen):
             text='Look for\nmy Phone',
             background_color=(0.15, 0.55, 0.15, 1),
             font_size='10sp',
-            size_hint=(1, 0.20),
+            size_hint=(1, 0.10),
             halign='center'
         )
         self.action_btn.bind(on_press=self._on_action_btn)
