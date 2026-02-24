@@ -49,7 +49,7 @@ class PairingScreen(Screen):
         )
 
         self.qr_image = Image(
-            size_hint=(1, 0.48),
+            size_hint=(1, 0.5),
             allow_stretch=True,
             keep_ratio=True,
             opacity=1
