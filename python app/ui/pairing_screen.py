@@ -67,7 +67,7 @@ class PairingScreen(Screen):
             text='Look for\nmy Phone',
             background_color=(0.15, 0.55, 0.15, 1),
             font_size='10sp',
-            size_hint=(1, 0.10),
+            size_hint=(1, 0.25),
             halign='center'
         )
         self.action_btn.bind(on_press=self._on_action_btn)
@@ -75,7 +75,7 @@ class PairingScreen(Screen):
         # Bottom row
         btn_row = BoxLayout(
             orientation='horizontal',
-            size_hint=(1, 0.10),
+            size_hint=(1, 0.25),
             spacing=5
         )
 
@@ -115,7 +115,7 @@ class PairingScreen(Screen):
                 text='Reset All Pairings',
                 background_color=(0.3, 0.1, 0.1, 1),
                 font_size='9sp',
-                size_hint=(1, 0.07)
+                size_hint=(1, 0.20)
             )
             self.reset_btn.bind(
                 on_press=lambda x: self.controller.reset_pairing()
