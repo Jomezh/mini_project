@@ -11,7 +11,6 @@ Roles:
 Requirements:
     pip install bleak bless
     sudo apt install bluetooth bluez
-    See /etc/bluetooth/main.conf for Zero 2W stability settings
 """
 
 import asyncio
@@ -43,8 +42,8 @@ _UUID_TO_KEY = {
 }
 _REQUIRED_CREDS = {'ssid', 'password', 'ble_name', 'ble_mac'}
 
-# How long to wait after server.start() before advertising.
-# Pi Zero 2W / CYW43439 needs this or phone finds empty GATT and drops.
+# Pi Zero 2W / CYW43439: wait for BlueZ to fully register GATT after start()
+# Without this, phone's discoverServices() returns empty → drops connection
 _GATT_READY_DELAY = 1.0
 
 
@@ -86,13 +85,13 @@ class BLEManager:
                 name="BLEServer"
             )
             self._bg_thread.start()
-            time.sleep(0.5)   # Let loop start
+            time.sleep(0.5)
 
             future = asyncio.run_coroutine_threadsafe(
                 self._start_gatt_server(), self._loop
             )
             # Timeout includes _GATT_READY_DELAY so phone never
-            # sees an empty GATT service list
+            # sees an empty GATT service list on discoverServices()
             future.result(timeout=15)
             print(f"[BLE] Advertising as '{self.ble_name}'")
             print(f"[BLE] Service UUID: {GATT_SERVICE_UUID}")
@@ -184,7 +183,7 @@ class BLEManager:
         print("[BLE] Stopped")
 
     async def _stop_server(self):
-        """Properly awaited server stop — prevents 'coroutine never awaited'."""
+        """Properly awaited server stop."""
         try:
             await self._server.stop()
         except Exception as e:
@@ -231,7 +230,6 @@ class BLEManager:
         self._server.read_request_func  = self._on_read
         self._server.write_request_func = self._on_write
 
-        # Connection callbacks (BlueZ backend only)
         if hasattr(self._server, 'on_connect'):
             self._server.on_connect    = self._on_client_connect
         if hasattr(self._server, 'on_disconnect'):
@@ -239,7 +237,6 @@ class BLEManager:
 
         await self._server.add_new_service(GATT_SERVICE_UUID)
 
-        # Phone writes credentials to these
         for uuid in _WRITABLE_CHARS:
             await self._server.add_new_characteristic(
                 GATT_SERVICE_UUID,
@@ -249,7 +246,6 @@ class BLEManager:
                 GATTAttributePermissions.writeable
             )
 
-        # Pi writes IP/status — phone reads / gets notified
         for uuid in _READABLE_CHARS:
             await self._server.add_new_characteristic(
                 GATT_SERVICE_UUID,
@@ -262,12 +258,13 @@ class BLEManager:
 
         await self._server.start()
 
-        # ── Critical: wait for BlueZ to fully register the GATT service ──
-        # Without this delay the phone's discoverServices() returns an empty
-        # list → phone drops with CONNECTION_TERMINATED_BY_LOCAL_HOST (22).
+        # ── FIX: Wait for BlueZ to fully register service ────────────────────
+        # Without this delay phone's discoverServices() returns empty list
+        # and drops with CONNECTION_TERMINATED_BY_LOCAL_HOST (status 22)
         await asyncio.sleep(_GATT_READY_DELAY)
 
-        print(f"[BLE] GATT server ready — {len(_WRITABLE_CHARS)} writable + "
+        print(f"[BLE] GATT server ready — "
+              f"{len(_WRITABLE_CHARS)} writable + "
               f"{len(_READABLE_CHARS)} readable characteristics registered")
         print(f"[BLE] Monitor: sudo btmon | grep -E 'Connect|Address'")
 
@@ -299,8 +296,8 @@ class BLEManager:
             print(f"[BLE] Empty write ignored for ...{uuid[-4:]}")
             return
 
-        if key == 'ssid'     and len(text) > 32:  return
-        if key == 'password' and len(text) > 64:  return
+        if key == 'ssid'     and len(text) > 32: return
+        if key == 'password' and len(text) > 64: return
 
         self._creds[key] = text
         print(f"[BLE] ← Received {key}: "
@@ -330,8 +327,15 @@ class BLEManager:
     async def _notify_characteristic(self, char_uuid: str):
         """Push notify to connected phone client."""
         try:
-            await self._server.update_value(GATT_SERVICE_UUID, char_uuid)
-            print(f"[BLE] Notified characteristic: ...{char_uuid[-4:]}")
+            # ── FIX: bless BlueZ backend update_value() is synchronous ───────
+            # Awaiting it causes: "object bool can't be used in await expression"
+            # It returns True on success, False on failure — do NOT await it
+            result = self._server.update_value(GATT_SERVICE_UUID, char_uuid)
+            if result:
+                print(f"[BLE] ✓ Notified characteristic: ...{char_uuid[-4:]}")
+            else:
+                print(f"[BLE] ✗ Notify returned False for ...{char_uuid[-4:]} "
+                      f"(phone may not be subscribed yet)")
         except Exception as e:
             print(f"[BLE] Notify error ({char_uuid[-4:]}): {e}")
 
