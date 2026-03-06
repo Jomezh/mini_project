@@ -11,6 +11,7 @@ Roles:
 Requirements:
     pip install bleak bless
     sudo apt install bluetooth bluez
+    See /etc/bluetooth/main.conf for Zero 2W stability settings
 """
 
 import asyncio
@@ -42,6 +43,10 @@ _UUID_TO_KEY = {
 }
 _REQUIRED_CREDS = {'ssid', 'password', 'ble_name', 'ble_mac'}
 
+# How long to wait after server.start() before advertising.
+# Pi Zero 2W / CYW43439 needs this or phone finds empty GATT and drops.
+_GATT_READY_DELAY = 1.0
+
 
 class BLEManager:
     """
@@ -63,7 +68,7 @@ class BLEManager:
         self._creds_received = threading.Event()
 
         # ── Connection state tracking ────────────────────────────────────────
-        self._connected_clients = set()   # MACs of currently connected phones
+        self._connected_clients = set()
         self._connection_lock   = threading.Lock()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -81,12 +86,14 @@ class BLEManager:
                 name="BLEServer"
             )
             self._bg_thread.start()
-            time.sleep(0.5)
+            time.sleep(0.5)   # Let loop start
 
             future = asyncio.run_coroutine_threadsafe(
                 self._start_gatt_server(), self._loop
             )
-            future.result(timeout=10)
+            # Timeout includes _GATT_READY_DELAY so phone never
+            # sees an empty GATT service list
+            future.result(timeout=15)
             print(f"[BLE] Advertising as '{self.ble_name}'")
             print(f"[BLE] Service UUID: {GATT_SERVICE_UUID}")
             return True
@@ -166,7 +173,7 @@ class BLEManager:
                 self._stop_server(), self._loop
             )
             try:
-                future.result(timeout=5)   # Wait for clean async stop
+                future.result(timeout=5)
             except Exception as e:
                 print(f"[BLE] Stop warning (non-fatal): {e}")
 
@@ -224,8 +231,7 @@ class BLEManager:
         self._server.read_request_func  = self._on_read
         self._server.write_request_func = self._on_write
 
-        # ── Connection callbacks ─────────────────────────────────────────────
-        # bless exposes these on BlueZ backend
+        # Connection callbacks (BlueZ backend only)
         if hasattr(self._server, 'on_connect'):
             self._server.on_connect    = self._on_client_connect
         if hasattr(self._server, 'on_disconnect'):
@@ -243,7 +249,7 @@ class BLEManager:
                 GATTAttributePermissions.writeable
             )
 
-        # Pi writes IP/status — phone reads/subscribes
+        # Pi writes IP/status — phone reads / gets notified
         for uuid in _READABLE_CHARS:
             await self._server.add_new_characteristic(
                 GATT_SERVICE_UUID,
@@ -255,8 +261,15 @@ class BLEManager:
             )
 
         await self._server.start()
-        print(f"[BLE] GATT server running")
-        print(f"[BLE] Monitor connections: sudo btmon | grep -E 'Connect|Address'")
+
+        # ── Critical: wait for BlueZ to fully register the GATT service ──
+        # Without this delay the phone's discoverServices() returns an empty
+        # list → phone drops with CONNECTION_TERMINATED_BY_LOCAL_HOST (22).
+        await asyncio.sleep(_GATT_READY_DELAY)
+
+        print(f"[BLE] GATT server ready — {len(_WRITABLE_CHARS)} writable + "
+              f"{len(_READABLE_CHARS)} readable characteristics registered")
+        print(f"[BLE] Monitor: sudo btmon | grep -E 'Connect|Address'")
 
     # ── Connection Tracking ───────────────────────────────────────────────────
 
@@ -283,7 +296,7 @@ class BLEManager:
 
         text = value.decode('utf-8', errors='replace').strip()
         if not text:
-            print(f"[BLE] Empty write ignored for {uuid[-4:]}")
+            print(f"[BLE] Empty write ignored for ...{uuid[-4:]}")
             return
 
         if key == 'ssid'     and len(text) > 32:  return
@@ -293,7 +306,7 @@ class BLEManager:
         print(f"[BLE] ← Received {key}: "
               f"{'*' * len(text) if key == 'password' else text}")
 
-        got = len(self._creds)
+        got  = len(self._creds)
         need = len(_REQUIRED_CREDS)
         print(f"[BLE]   Credentials: {got}/{need} received")
 
@@ -334,7 +347,6 @@ class BLEManager:
         known_names_lower = {n.lower() for n in known_names if n}
 
         devices = await BleakScanner.discover(timeout=timeout)
-
         print(f"[BLE] Scan complete — {len(devices)} device(s) visible nearby")
 
         for device in devices:
