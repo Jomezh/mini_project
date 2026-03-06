@@ -3,9 +3,9 @@ from threading import Thread
 import time
 import os
 
-WIFI_RETRY_LIMIT        = 3   # Max attempts before giving up
-WIFI_RETRY_INTERVAL     = 10  # Seconds between retries
-WIFI_FIRST_HOTSPOT_WAIT = 15  # Extra wait on attempt 1 — cold hotspot start
+WIFI_RETRY_LIMIT        = 3
+WIFI_RETRY_INTERVAL     = 10  # seconds between retries
+WIFI_FIRST_HOTSPOT_WAIT = 15  # extra wait on attempt 1 — cold hotspot start
 
 
 class AppController:
@@ -17,7 +17,7 @@ class AppController:
         self.priming_check_event    = None
         self.ble_timeout_event      = None
         self.current_test_data      = {}
-        self._current_connected_mac = None  # MAC of currently active device
+        self._current_connected_mac = None
 
     def on_app_start(self):
         Thread(target=self.dm.hardware.initialize, daemon=True).start()
@@ -32,7 +32,6 @@ class AppController:
     # ── Navigation ────────────────────────────────────────────────────────
 
     def go_to_home(self):
-        """Navigate to home screen and update connected device display."""
         if self._current_connected_mac:
             known = self.dm.get_known_devices()
             match = next(
@@ -40,13 +39,14 @@ class AppController:
             )
             if match:
                 home = self.sm.get_screen('home')
-                home.set_connected_device(match['blename'], match.get('ssid'), self.sm.current)
+                home.set_connected_device(
+                    match['blename'], match.get('ssid'), self.sm.current
+                )
         self.sm.current = 'home'
 
     # ── Boot flow ─────────────────────────────────────────────────────────
 
     def start_pairing_screen(self):
-        """Called at boot. Known devices → BLE scan first. No known devices → show QR."""
         screen = self.sm.get_screen('pairing')
         if self.dm.has_known_devices():
             screen.show_scanning()
@@ -57,7 +57,6 @@ class AppController:
     # ── BLE scan / auto-connect ───────────────────────────────────────────
 
     def scan_for_known_device(self):
-        """BLE scan for any previously paired device (runs in background thread)."""
         try:
             found = self.dm.scan_for_known_devices(timeout=10)
             if found:
@@ -77,7 +76,6 @@ class AppController:
             )
 
     def auto_connect(self, known_device):
-        """Phone found via BLE — attempt WiFi/hotspot connect."""
         self.sm.get_screen('pairing').show_connecting(known_device['blename'])
         Thread(
             target=self.do_wifi_connect_with_retry,
@@ -86,25 +84,20 @@ class AppController:
         ).start()
 
     def do_wifi_connect_with_retry(self, known_device):
-        """Crash-protected wrapper for auto-connect retry."""
         try:
             self.autoconnect_retry_logic(known_device)
         except Exception as e:
             import traceback
             print(f"[CONTROLLER] !! WiFi connect thread crash: {e}")
             traceback.print_exc()
+            err = str(e)   # capture before lambda — e is deleted after except block
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_qr(
-                    message=f"Connection error: {e}"
+                    message=f"Connection error: {err}"
                 ), 0
             )
 
     def autoconnect_retry_logic(self, known_device):
-        """
-        Try to connect to saved hotspot.
-        BLE confirmed phone is nearby so retries make sense.
-        FIX: notify phone BEFORE each attempt, wait for hotspot to broadcast.
-        """
         ssid   = known_device['ssid']
         blemac = known_device['blemac']
         name   = known_device['blename']
@@ -112,13 +105,11 @@ class AppController:
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             print(f"[CONTROLLER] WiFi attempt {attempt}/{WIFI_RETRY_LIMIT} for {ssid}")
 
-            # ── Notify phone BEFORE attempting (not after failure) ────────
             self.dm.network.notify_enable_hotspot()
 
             wait         = WIFI_FIRST_HOTSPOT_WAIT if attempt == 1 else WIFI_RETRY_INTERVAL
             retries_left = WIFI_RETRY_LIMIT - attempt
 
-            # Show countdown on HMI while waiting
             Clock.schedule_once(
                 lambda dt, a=attempt, rl=retries_left, w=wait:
                     self.sm.get_screen('pairing').show_hotspot_prompt(
@@ -127,9 +118,8 @@ class AppController:
                     ), 0
             )
 
-            time.sleep(wait)  # background thread — Kivy main thread is unaffected
+            time.sleep(wait)
 
-            # Show "Connecting…" while nmcli is running
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_connecting(name), 0
             )
@@ -145,7 +135,6 @@ class AppController:
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
 
-        # All retries exhausted
         Clock.schedule_once(
             lambda dt: self.sm.get_screen('pairing').show_qr(
                 message=(
@@ -157,19 +146,16 @@ class AppController:
         )
 
     def retry_wifi_now(self):
-        """User tapped 'Retry Now' on hotspot prompt."""
         self.sm.get_screen('pairing').show_scanning()
         Thread(target=self.scan_for_known_device, daemon=True).start()
 
     def rescan_for_devices(self):
-        """User tapped 'Look for my Phone'."""
         self.sm.get_screen('pairing').show_scanning()
         Thread(target=self.scan_for_known_device, daemon=True).start()
 
     # ── New BLE pairing flow ──────────────────────────────────────────────
 
     def start_pairing(self):
-        """User tapped 'Connect New Phone' — start BLE advertising."""
         screen = self.sm.get_screen('pairing')
         screen.show_waiting_ble()
         success = self.dm.network.start_ble_advertising()
@@ -203,7 +189,6 @@ class AppController:
             )
 
     def on_paired(self, credentials):
-        """Phone sent SSID + password via BLE. Save and connect."""
         if self.ble_timeout_event:
             self.ble_timeout_event.cancel()
         self.dm.save_pairing(credentials)
@@ -214,24 +199,20 @@ class AppController:
         ).start()
 
     def do_new_pair_wifi_connect(self, credentials):
-        """Crash-protected wrapper for new-pair WiFi connect."""
         try:
             self.new_pair_wifi_logic(credentials)
         except Exception as e:
             import traceback
             print(f"[CONTROLLER] !! New pair WiFi crash: {e}")
             traceback.print_exc()
+            err = str(e)   # capture before lambda — e is deleted after except block
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_qr(
-                    message=f"Connection error: {e}"
+                    message=f"Connection error: {err}"
                 ), 0
             )
 
     def new_pair_wifi_logic(self, credentials):
-        """
-        WiFi connect after fresh BLE pairing.
-        FIX: notify phone BEFORE each attempt, give hotspot time to start.
-        """
         ssid     = credentials['ssid']
         password = credentials['password']
         blemac   = credentials.get('blemac', '')
@@ -240,13 +221,11 @@ class AppController:
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             print(f"[CONTROLLER] New pair WiFi attempt {attempt}/{WIFI_RETRY_LIMIT}")
 
-            # ── Notify phone BEFORE attempting (not after failure) ────────
             self.dm.network.notify_enable_hotspot()
 
             wait         = WIFI_FIRST_HOTSPOT_WAIT if attempt == 1 else WIFI_RETRY_INTERVAL
             retries_left = WIFI_RETRY_LIMIT - attempt
 
-            # Show countdown on HMI while waiting
             Clock.schedule_once(
                 lambda dt, a=attempt, rl=retries_left, w=wait:
                     self.sm.get_screen('pairing').show_hotspot_prompt(
@@ -255,9 +234,8 @@ class AppController:
                     ), 0
             )
 
-            time.sleep(wait)  # background thread — safe
+            time.sleep(wait)
 
-            # Show "Connecting…" while nmcli is running
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_connecting(name), 0
             )
@@ -271,14 +249,13 @@ class AppController:
                 pi_ip = self.dm.network.get_local_ip()
                 if pi_ip:
                     self.dm.network.send_ip_to_phone(pi_ip)
-                    time.sleep(1)  # let phone read IP characteristic
+                    time.sleep(1)
                 self.dm.network.stop_ble()
                 self.dm.network.start_wifi_server()
                 print("[CONTROLLER] New pair complete → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
 
-        # All retries exhausted
         Clock.schedule_once(
             lambda dt: self.sm.get_screen('pairing').show_qr(
                 message="Please enable your phone's hotspot, scan again"
@@ -296,14 +273,12 @@ class AppController:
     # ── Device management ────────────────────────────────────────────────
 
     def reset_pairing(self):
-        """Dev only — wipes ALL known devices."""
         self.dm.reset_pairing()
         self._current_connected_mac = None
         self.sm.get_screen('pairing').show_qr()
         print("[CONTROLLER] All pairing data cleared")
 
     def forget_device(self):
-        """Forget ONLY the currently connected device."""
         if self._current_connected_mac:
             known = self.dm.get_known_devices()
             match = next(
@@ -349,15 +324,18 @@ class AppController:
             import traceback
             print(f"[CONTROLLER] !! Capture thread crash: {e}")
             traceback.print_exc()
+            err    = str(e)   # capture before lambda
             screen = self.sm.get_screen('capture')
-            Clock.schedule_once(lambda dt: screen.show_error(f"Capture error: {e}"), 0)
+            Clock.schedule_once(lambda dt: screen.show_error(f"Capture error: {err}"), 0)
             Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
 
     def capture_logic(self):
         screen     = self.sm.get_screen('capture')
         image_path = self.dm.hardware.capture_image()
         if not image_path:
-            Clock.schedule_once(lambda dt: screen.show_error("Failed to capture image"), 0)
+            Clock.schedule_once(
+                lambda dt: screen.show_error("Failed to capture image"), 0
+            )
             Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
             return
         self.current_test_data['image_path'] = image_path
@@ -366,14 +344,18 @@ class AppController:
         if config.USE_REAL_NETWORK:
             success = self.dm.network.send_image_to_phone(image_path)
             if success:
-                Clock.schedule_once(lambda dt: setattr(self.sm, 'current', 'analyzing'), 0)
+                Clock.schedule_once(
+                    lambda dt: setattr(self.sm, 'current', 'analyzing'), 0
+                )
                 Thread(target=self.wait_for_cnn_result, daemon=True).start()
             else:
-                Clock.schedule_once(lambda dt: screen.show_error("Failed to send image"), 0)
+                Clock.schedule_once(
+                    lambda dt: screen.show_error("Failed to send image"), 0
+                )
                 Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
         else:
             print("[CONTROLLER] Mock - skipping CNN, using default sensors")
-            self.current_test_data['food_type']      = 'Unknown'
+            self.current_test_data['food_type']       = 'Unknown'
             self.current_test_data['sensors_to_read'] = ['MQ2', 'MQ3', 'MQ135']
             self.delete_image(image_path)
             Clock.schedule_once(lambda dt: self.proceed_to_reading(), 0)
@@ -382,12 +364,14 @@ class AppController:
         try:
             result = self.dm.network.wait_for_cnn_result()
             if result:
-                Clock.schedule_once(lambda dt: self.on_cnn_result_received(result), 0)
+                Clock.schedule_once(
+                    lambda dt: self.on_cnn_result_received(result), 0
+                )
         except Exception as e:
             print(f"[CONTROLLER] !! CNN result thread crash: {e}")
 
     def on_cnn_result_received(self, result):
-        self.current_test_data['food_type']      = result.get('food_type')
+        self.current_test_data['food_type']       = result.get('food_type')
         self.current_test_data['sensors_to_read'] = result.get('sensors')
         image_path = self.current_test_data.get('image_path')
         if image_path:

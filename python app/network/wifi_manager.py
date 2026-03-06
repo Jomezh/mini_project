@@ -1,6 +1,3 @@
-# WiFi manager — connects Pi to phone's hotspot, gets Pi IP,
-# serves Flask endpoint for data transfer.
-
 import subprocess
 import socket
 import time
@@ -29,14 +26,14 @@ class WiFiManager:
     Sends images and CSVs to phone via HTTP.
     """
 
-    FLASK_PORT = 8765   # Pi server port / heartbeat
-    PHONE_PORT = 8080   # Phone app server port
+    FLASK_PORT = 8765
+    PHONE_PORT = 8080
 
     def __init__(self):
-        self.phone_ip     = None
-        self.server_ready = threading.Event()
-        self.results      = {}   # incoming results keyed by type
-        self.results_lock = threading.Lock()
+        self.phone_ip      = None
+        self.server_ready  = threading.Event()
+        self.results       = {}
+        self.results_lock  = threading.Lock()
         self.result_events = {
             'cnn_result': threading.Event(),
             'ml_result':  threading.Event(),
@@ -45,11 +42,12 @@ class WiFiManager:
 
     # ── WiFi connect ──────────────────────────────────────────────────────
 
-    def connect_wifi(self, ssid: str, password: str = None) -> bool:
+    def connect(self, ssid: str, password: str = None) -> bool:
         """
         Connect to phone's hotspot via nmcli.
-        Uses a 2-second delay so BLE can ACK before network interface changes.
-        If password is None, uses saved nmcli profile (known device flow).
+        Uses 2s delay so BLE can ACK before network interface changes.
+        password=None → uses saved nmcli profile (known device / auto-connect flow).
+        password=str  → new pair, connects with explicit credentials.
         """
         print(f"[WIFI] Scheduling connection to '{ssid}' in 2s...")
 
@@ -58,7 +56,6 @@ class WiFiManager:
 
         threading.Thread(target=delayed, daemon=True).start()
 
-        # Wait up to 30s for actual connection
         for _ in range(30):
             time.sleep(1)
             if self.is_connected_to(ssid):
@@ -70,18 +67,16 @@ class WiFiManager:
 
     def _do_connect(self, ssid: str, password: str = None):
         """
-        Execute nmcli connect.
-        - With password   → new pair, connect with explicit credentials
+        Internal: execute nmcli connect.
+        - With password   → new pair, explicit credentials
         - Without password → known device, bring up saved profile
         """
         try:
             if password:
-                # New pair — connect with explicit password
                 cmd = ['nmcli', 'dev', 'wifi', 'connect', ssid,
                        'password', password]
                 print(f"[WIFI] nmcli connecting to '{ssid}' with password")
             elif self._profile_exists(ssid):
-                # Known device — bring up existing saved profile
                 cmd = ['nmcli', 'con', 'up', ssid]
                 print(f"[WIFI] nmcli bringing up saved profile for '{ssid}'")
             else:
@@ -91,7 +86,6 @@ class WiFiManager:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=30
             )
-
             stdout = result.stdout.strip()
             stderr = result.stderr.strip()
 
@@ -103,7 +97,7 @@ class WiFiManager:
                     print(f"[WIFI] nmcli stderr: {stderr}")
                 # Fallback: try bringing up saved profile
                 if password:
-                    print(f"[WIFI] Fallback: trying nmcli con up '{ssid}'")
+                    print(f"[WIFI] Fallback: trying 'nmcli con up {ssid}'")
                     subprocess.run(
                         ['nmcli', 'con', 'up', ssid],
                         capture_output=True, timeout=15
@@ -148,7 +142,6 @@ class WiFiManager:
                 return ip
             except Exception:
                 pass
-        # Fallback
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(('8.8.8.8', 80))
@@ -174,13 +167,6 @@ class WiFiManager:
             except Exception:
                 pass
         return None
-
-    # ── BLE notify passthrough ────────────────────────────────────────────
-
-    def notify_enable_hotspot(self) -> bool:
-        """Delegate to BLE manager — called by controller."""
-        # Implemented in network_manager.py which holds both WiFi + BLE refs
-        raise NotImplementedError("Call via NetworkManager.notify_enable_hotspot()")
 
     # ── Flask server ──────────────────────────────────────────────────────
 
@@ -262,13 +248,10 @@ class WiFiManager:
             print(f"[WIFI] CSV send error: {e}")
             return False
 
-    # ── Wait for phone results ────────────────────────────────────────────
+    # ── Wait for results ──────────────────────────────────────────────────
 
     def wait_for_message(self, message_type: str, timeout: int = 120):
-        """
-        Block until phone POSTs a result to our Flask server.
-        Returns result dict or None on timeout.
-        """
+        """Block until phone POSTs a result. Returns dict or None on timeout."""
         print(f"[WIFI] Waiting for {message_type} from phone...")
         event = self.result_events.get(message_type)
         if not event:
