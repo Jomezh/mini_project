@@ -48,7 +48,7 @@ class WiFiManager:
         Uses 2s delay so BLE can ACK before network interface changes.
         password=None → uses saved nmcli profile (known device / auto-connect).
         password=str  → new pair, connects with explicit credentials.
-        Wait up to 45s — accounts for 2s BLE delay + 3s rescan + 30s nmcli + margin.
+        Wait up to 45s — accounts for 2s BLE delay + blocking rescan + 30s nmcli.
         """
         print(f"[WIFI] Scheduling connection to '{ssid}' in 2s...")
 
@@ -69,20 +69,24 @@ class WiFiManager:
     def _do_connect(self, ssid: str, password: str = None):
         """
         Internal: execute nmcli connect.
-        Forces a fresh WiFi rescan first so nmcli can see the phone hotspot —
-        without this, nmcli uses a stale scan cache and reports
-        'No network with SSID found' even when the hotspot is active.
+        Uses 'nmcli dev wifi list --rescan yes' which BLOCKS until the scan
+        is fully complete — unlike 'nmcli dev wifi rescan' which is
+        fire-and-forget and returns before NetworkManager's cache is updated,
+        causing 'No network with SSID found' even when hotspot is active.
         """
         try:
-            # ── Step 1: force fresh scan — fixes stale cache 'SSID not found' ──
-            print("[WIFI] Forcing nmcli rescan...")
-            subprocess.run(
-                ['nmcli', 'dev', 'wifi', 'rescan'],
-                capture_output=True, timeout=10
+            # ── Step 1: blocking rescan — waits until NM cache fully refreshed ──
+            print("[WIFI] Running blocking rescan (nmcli dev wifi list --rescan yes)...")
+            scan_result = subprocess.run(
+                ['nmcli', 'dev', 'wifi', 'list', '--rescan', 'yes'],
+                capture_output=True, text=True, timeout=20
             )
-            time.sleep(3)  # wait for scan results to populate
+            if ssid not in scan_result.stdout:
+                print(f"[WIFI] WARNING: '{ssid}' not visible after rescan — hotspot may still be starting")
+            else:
+                print(f"[WIFI] '{ssid}' confirmed visible in scan ✓")
 
-            # ── Step 2: pick the right connect command ─────────────────────────
+            # ── Step 2: pick the right connect command ────────────────────────
             if password:
                 cmd = ['nmcli', 'dev', 'wifi', 'connect', ssid,
                        'password', password]
@@ -94,7 +98,7 @@ class WiFiManager:
                 print(f"[WIFI] No saved profile for '{ssid}' and no password — cannot connect")
                 return
 
-            # ── Step 3: run connect ────────────────────────────────────────────
+            # ── Step 3: connect ───────────────────────────────────────────────
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=30
             )
