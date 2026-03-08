@@ -3,21 +3,21 @@ from threading import Thread
 import time
 import os
 
+
 WIFI_RETRY_LIMIT        = 3
-WIFI_RETRY_INTERVAL     = 10  # seconds between retries
-WIFI_FIRST_HOTSPOT_WAIT = 15  # extra wait on attempt 1 — cold hotspot start
+WIFI_RETRY_INTERVAL     = 10
+WIFI_FIRST_HOTSPOT_WAIT = 15
 
 
 class AppController:
-    """Main application controller managing state and business logic."""
 
     def __init__(self, screen_manager, device_manager):
         self.sm = screen_manager
         self.dm = device_manager
-        self.priming_check_event    = None
-        self.ble_timeout_event      = None
-        self.current_test_data      = {}
-        self._current_connected_mac = None
+        self.priming_check_event   = None
+        self.ble_timeout_event     = None
+        self.current_test_data     = {}
+        self.current_connected_mac = None
 
     def on_app_start(self):
         Thread(target=self.dm.hardware.initialize, daemon=True).start()
@@ -32,15 +32,15 @@ class AppController:
     # ── Navigation ────────────────────────────────────────────────────────
 
     def go_to_home(self):
-        if self._current_connected_mac:
+        if self.current_connected_mac:
             known = self.dm.get_known_devices()
             match = next(
-                (d for d in known if d['blemac'] == self._current_connected_mac), None
+                (d for d in known if d['ble_mac'] == self.current_connected_mac), None
             )
             if match:
                 home = self.sm.get_screen('home')
                 home.set_connected_device(
-                    match['blename'], match.get('ssid'), self.sm.current
+                    match['ble_name'], match.get('ssid', '')
                 )
         self.sm.current = 'home'
 
@@ -76,7 +76,7 @@ class AppController:
             )
 
     def auto_connect(self, known_device):
-        self.sm.get_screen('pairing').show_connecting(known_device['blename'])
+        self.sm.get_screen('pairing').show_connecting(known_device['ble_name'])
         Thread(
             target=self.do_wifi_connect_with_retry,
             args=(known_device,),
@@ -90,7 +90,7 @@ class AppController:
             import traceback
             print(f"[CONTROLLER] !! WiFi connect thread crash: {e}")
             traceback.print_exc()
-            err = str(e)   # capture before lambda — e is deleted after except block
+            err = str(e)
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_qr(
                     message=f"Connection error: {err}"
@@ -99,8 +99,8 @@ class AppController:
 
     def autoconnect_retry_logic(self, known_device):
         ssid   = known_device['ssid']
-        blemac = known_device['blemac']
-        name   = known_device['blename']
+        blemac = known_device['ble_mac']
+        name   = known_device['ble_name']
 
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             print(f"[CONTROLLER] WiFi attempt {attempt}/{WIFI_RETRY_LIMIT} for {ssid}")
@@ -128,7 +128,7 @@ class AppController:
             print(f"[CONTROLLER] WiFi result: {wifiok}")
 
             if wifiok:
-                self._current_connected_mac = blemac
+                self.current_connected_mac = blemac
                 self.dm.update_last_connected(blemac)
                 self.dm.network.start_wifi_server()
                 print("[CONTROLLER] Auto-connect success → Home")
@@ -205,7 +205,7 @@ class AppController:
             import traceback
             print(f"[CONTROLLER] !! New pair WiFi crash: {e}")
             traceback.print_exc()
-            err = str(e)   # capture before lambda — e is deleted after except block
+            err = str(e)
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_qr(
                     message=f"Connection error: {err}"
@@ -215,8 +215,8 @@ class AppController:
     def new_pair_wifi_logic(self, credentials):
         ssid     = credentials['ssid']
         password = credentials['password']
-        blemac   = credentials.get('blemac', '')
-        name     = credentials.get('blename', 'your phone')
+        blemac   = credentials.get('ble_mac', '')
+        name     = credentials.get('ble_name', 'your phone')
 
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             print(f"[CONTROLLER] New pair WiFi attempt {attempt}/{WIFI_RETRY_LIMIT}")
@@ -244,7 +244,7 @@ class AppController:
             print(f"[CONTROLLER] WiFi result: {wifiok}")
 
             if wifiok:
-                self._current_connected_mac = blemac
+                self.current_connected_mac = blemac
                 self.dm.update_last_connected(blemac)
                 pi_ip = self.dm.network.get_local_ip()
                 if pi_ip:
@@ -274,19 +274,19 @@ class AppController:
 
     def reset_pairing(self):
         self.dm.reset_pairing()
-        self._current_connected_mac = None
+        self.current_connected_mac = None
         self.sm.get_screen('pairing').show_qr()
         print("[CONTROLLER] All pairing data cleared")
 
     def forget_device(self):
-        if self._current_connected_mac:
+        if self.current_connected_mac:
             known = self.dm.get_known_devices()
             match = next(
-                (d for d in known if d['blemac'] == self._current_connected_mac), None
+                (d for d in known if d['ble_mac'] == self.current_connected_mac), None
             )
-            name = match['blename'] if match else self._current_connected_mac
-            self.dm.remove_device(self._current_connected_mac)
-            self._current_connected_mac = None
+            name = match['ble_name'] if match else self.current_connected_mac
+            self.dm.remove_device(self.current_connected_mac)
+            self.current_connected_mac = None
             print(f"[CONTROLLER] Forgot device: {name}")
         else:
             print("[CONTROLLER] forget_device: no active device to forget")
@@ -324,7 +324,7 @@ class AppController:
             import traceback
             print(f"[CONTROLLER] !! Capture thread crash: {e}")
             traceback.print_exc()
-            err    = str(e)   # capture before lambda
+            err    = str(e)
             screen = self.sm.get_screen('capture')
             Clock.schedule_once(lambda dt: screen.show_error(f"Capture error: {err}"), 0)
             Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
@@ -354,7 +354,6 @@ class AppController:
                 )
                 Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
         else:
-            print("[CONTROLLER] Mock - skipping CNN, using default sensors")
             self.current_test_data['food_type']       = 'Unknown'
             self.current_test_data['sensors_to_read'] = ['MQ2', 'MQ3', 'MQ135']
             self.delete_image(image_path)

@@ -42,8 +42,6 @@ _UUID_TO_KEY = {
 }
 _REQUIRED_CREDS = {'ssid', 'password', 'ble_name', 'ble_mac'}
 
-# Pi Zero 2W / CYW43439: wait for BlueZ to fully register GATT after start()
-# Without this, phone's discoverServices() returns empty → drops connection
 _GATT_READY_DELAY = 1.0
 
 
@@ -66,7 +64,6 @@ class BLEManager:
         self._outgoing       = {}
         self._creds_received = threading.Event()
 
-        # ── Connection state tracking ────────────────────────────────────────
         self._connected_clients = set()
         self._connection_lock   = threading.Lock()
 
@@ -90,8 +87,6 @@ class BLEManager:
             future = asyncio.run_coroutine_threadsafe(
                 self._start_gatt_server(), self._loop
             )
-            # Timeout includes _GATT_READY_DELAY so phone never
-            # sees an empty GATT service list on discoverServices()
             future.result(timeout=15)
             print(f"[BLE] Advertising as '{self.ble_name}'")
             print(f"[BLE] Service UUID: {GATT_SERVICE_UUID}")
@@ -156,7 +151,6 @@ class BLEManager:
 
     @property
     def is_phone_connected(self) -> bool:
-        """True if at least one phone is currently connected via BLE."""
         with self._connection_lock:
             return len(self._connected_clients) > 0
 
@@ -183,7 +177,6 @@ class BLEManager:
         print("[BLE] Stopped")
 
     async def _stop_server(self):
-        """Properly awaited server stop."""
         try:
             await self._server.stop()
         except Exception as e:
@@ -257,10 +250,6 @@ class BLEManager:
             )
 
         await self._server.start()
-
-        # ── FIX: Wait for BlueZ to fully register service ────────────────────
-        # Without this delay phone's discoverServices() returns empty list
-        # and drops with CONNECTION_TERMINATED_BY_LOCAL_HOST (status 22)
         await asyncio.sleep(_GATT_READY_DELAY)
 
         print(f"[BLE] GATT server ready — "
@@ -285,7 +274,6 @@ class BLEManager:
     # ── GATT Callbacks ────────────────────────────────────────────────────────
 
     def _on_write(self, characteristic, value: bytearray):
-        """Phone wrote a credential field."""
         uuid = str(characteristic.uuid).lower()
         key  = _UUID_TO_KEY.get(uuid)
         if key is None:
@@ -312,7 +300,6 @@ class BLEManager:
             self._creds_received.set()
 
     def _on_read(self, characteristic, **kwargs) -> bytearray:
-        """Phone read a Pi-managed characteristic."""
         uuid = str(characteristic.uuid).lower()
         if uuid == CHAR_IP_UUID:
             ip = self._outgoing.get('ip', '')
@@ -325,11 +312,7 @@ class BLEManager:
         return bytearray()
 
     async def _notify_characteristic(self, char_uuid: str):
-        """Push notify to connected phone client."""
         try:
-            # ── FIX: bless BlueZ backend update_value() is synchronous ───────
-            # Awaiting it causes: "object bool can't be used in await expression"
-            # It returns True on success, False on failure — do NOT await it
             result = self._server.update_value(GATT_SERVICE_UUID, char_uuid)
             if result:
                 print(f"[BLE] ✓ Notified characteristic: ...{char_uuid[-4:]}")
@@ -355,11 +338,28 @@ class BLEManager:
 
         for device in devices:
             mac  = (device.address or '').upper()
-            name = (device.name    or '').lower()
-            if mac in known_macs_upper or name in known_names_lower:
-                print(f"[BLE] ✓ Found known device: "
-                      f"{device.name} ({device.address})")
-                return {'mac': device.address, 'name': device.name or ''}
+            name = (device.name    or '')
+
+            # Some Android phones (Motorola, iQOO) embed their advertised name
+            # inside ServiceData UUID 00000720 instead of the standard Name field
+            if not name and device.metadata:
+                svc_data = device.metadata.get('service_data', {})
+                for uuid_key, raw_bytes in svc_data.items():
+                    if '00000720' in str(uuid_key).lower():
+                        try:
+                            extracted = raw_bytes.decode(
+                                'utf-8', errors='ignore'
+                            ).rstrip('\x00')
+                            if extracted:
+                                name = extracted
+                                print(f"[BLE] ServiceData name extracted: '{name}'")
+                                break
+                        except Exception:
+                            pass
+
+            if mac in known_macs_upper or name.lower() in known_names_lower:
+                print(f"[BLE] ✓ Found known device: {name} ({device.address})")
+                return {'mac': device.address, 'name': name or ''}
 
         print("[BLE] No known devices found in scan")
         return None

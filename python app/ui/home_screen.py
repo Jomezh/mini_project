@@ -14,7 +14,6 @@ class HomeScreen(Screen):
     def _build_ui(self):
         layout = BoxLayout(orientation='vertical', padding=20, spacing=12)
 
-        # Title section
         title_box = BoxLayout(
             orientation='vertical',
             size_hint=(1, 0.22),
@@ -29,7 +28,7 @@ class HomeScreen(Screen):
         )
 
         subtitle = Label(
-            text='VOC based food spoilage\ndetection system',  # fixed \\n → \n
+            text='VOC based food spoilage\ndetection system',
             font_size='11sp',
             color=(0.7, 0.7, 0.7, 1),
             size_hint=(1, 0.4),
@@ -41,7 +40,6 @@ class HomeScreen(Screen):
         title_box.add_widget(title)
         title_box.add_widget(subtitle)
 
-        # Connected device name + SSID
         self.device_label = Label(
             text='',
             font_size='9sp',
@@ -52,7 +50,6 @@ class HomeScreen(Screen):
         )
         self.device_label.bind(size=self.device_label.setter('text_size'))
 
-        # Waiting for sensors message
         self.waiting_label = Label(
             text='',
             font_size='12sp',
@@ -64,7 +61,6 @@ class HomeScreen(Screen):
         )
         self.waiting_label.bind(size=self.waiting_label.setter('text_size'))
 
-        # Button section
         button_box = BoxLayout(
             orientation='horizontal',
             size_hint=(1, 0.35),
@@ -72,7 +68,7 @@ class HomeScreen(Screen):
         )
 
         self.forget_btn = Button(
-            text='Forget\nDevice',          # fixed \\n → \n
+            text='Forget\nDevice',
             size_hint=(1, 1),
             background_color=(0.5, 0.3, 0.1, 1),
             font_size='11sp',
@@ -89,7 +85,7 @@ class HomeScreen(Screen):
         self.start_test_btn.bind(on_press=self.on_start_test)
 
         shutdown_btn = Button(
-            text='Turn Off\nDevice',        # fixed \\n → \n
+            text='Turn Off\nDevice',
             size_hint=(1, 1),
             background_color=(0.7, 0.2, 0.2, 1),
             font_size='13sp',
@@ -101,7 +97,6 @@ class HomeScreen(Screen):
         button_box.add_widget(self.start_test_btn)
         button_box.add_widget(shutdown_btn)
 
-        # WiFi status bar
         self.status_label = Label(
             text='Connected via WiFi',
             font_size='10sp',
@@ -120,19 +115,15 @@ class HomeScreen(Screen):
     # ── Lifecycle ──────────────────────────────────────
 
     def on_enter(self):
-        """Refresh connected device info every time screen is shown"""
         if not self.controller:
             return
-        mac = self.controller.current_connected_mac
+        mac = getattr(self.controller, 'current_connected_mac', None)
         if mac:
             known = self.controller.dm.get_known_devices()
-            match = next(
-                (d for d in known if d['ble_mac'] == mac), None
-            )
+            match = next((d for d in known if d['ble_mac'] == mac), None)
             if match:
                 self.set_connected_device(
-                    match['ble_name'],
-                    match.get('ssid', '')
+                    match['ble_name'], match.get('ssid', '')
                 )
         else:
             self.device_label.text = ''
@@ -146,7 +137,7 @@ class HomeScreen(Screen):
             self.device_label.text = f'{ble_name}'
 
     def show_waiting_message(self):
-        self.waiting_label.text      = 'Waiting for VOC sensors\nto heat up...'  # fixed
+        self.waiting_label.text      = 'Waiting for VOC sensors\nto heat up...'
         self.waiting_label.opacity   = 1
         self.start_test_btn.disabled = True
 
