@@ -10,15 +10,15 @@ class HeartbeatManager:
     Tolerates up to MAX_FAILURES consecutive failures before alerting.
     """
 
-    HEARTBEAT_INTERVAL = 30    # Seconds between checks
-    HEARTBEAT_TIMEOUT  = 5     # TCP connect timeout
-    HEARTBEAT_PORT     = 8765  # Must match phone app server port
-    MAX_FAILURES       = 3     # Alert after this many consecutive failures
+    HEARTBEAT_INTERVAL = 30   # seconds between checks
+    HEARTBEAT_TIMEOUT  = 5    # TCP connect timeout
+    HEARTBEAT_PORT     = 8080 # FIX: phone's server port, not Pi's Flask port
+    MAX_FAILURES       = 3    # alert after this many consecutive failures
 
     def __init__(self, phone_address, on_connected=None, on_disconnected=None):
-        self.phone_address    = phone_address
-        self.on_connected     = on_connected
-        self.on_disconnected  = on_disconnected
+        self.phone_address   = phone_address
+        self.on_connected    = on_connected
+        self.on_disconnected = on_disconnected
 
         self._thread        = None
         self._stop_event    = threading.Event()
@@ -49,18 +49,18 @@ class HeartbeatManager:
             self._failure_count = 0
             if self._is_connected is not True:
                 self._is_connected = True
-                print("[HEARTBEAT] Phone app ONLINE")
+                print("[HEARTBEAT] Phone app ONLINE ✓")
                 if self.on_connected:
                     Clock.schedule_once(lambda dt: self.on_connected(), 0)
         else:
             self._failure_count += 1
-            print(f"[HEARTBEAT] Unreachable "
+            print(f"[HEARTBEAT] Phone unreachable "
                   f"({self._failure_count}/{self.MAX_FAILURES})")
 
             if self._failure_count >= self.MAX_FAILURES:
                 if self._is_connected is not False:
                     self._is_connected = False
-                    print("[HEARTBEAT] Phone app OFFLINE")
+                    print("[HEARTBEAT] Phone app OFFLINE ✗")
                     if self.on_disconnected:
                         Clock.schedule_once(lambda dt: self.on_disconnected(), 0)
 
@@ -77,5 +77,5 @@ class HeartbeatManager:
 
     @property
     def is_phone_online(self):
-        """True only if last check confirmed phone is reachable"""
+        """True only if last check confirmed phone is reachable."""
         return self._is_connected is True

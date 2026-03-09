@@ -131,6 +131,7 @@ class AppController:
                 self.current_connected_mac = blemac
                 self.dm.update_last_connected(blemac)
                 self.dm.network.start_wifi_server()
+                self.dm.start_heartbeat_after_wifi()  # FIX: start after WiFi confirmed
                 print("[CONTROLLER] Auto-connect success → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
@@ -252,6 +253,7 @@ class AppController:
                     time.sleep(1)
                 self.dm.network.stop_ble()
                 self.dm.network.start_wifi_server()
+                self.dm.start_heartbeat_after_wifi()  # FIX: start after WiFi confirmed
                 print("[CONTROLLER] New pair complete → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
@@ -354,6 +356,7 @@ class AppController:
                 )
                 Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
         else:
+            print("[CONTROLLER] Mock — skipping CNN, using default sensors")
             self.current_test_data['food_type']       = 'Unknown'
             self.current_test_data['sensors_to_read'] = ['MQ2', 'MQ3', 'MQ135']
             self.delete_image(image_path)

@@ -70,7 +70,7 @@ class DeviceManager:
         return len(self.get_known_devices()) > 0
 
     def save_pairing(self, credentials):
-        """Add or update device in known_devices list"""
+        """Add or update device in known_devices list."""
         from datetime import datetime
 
         known   = self.get_known_devices()
@@ -97,12 +97,25 @@ class DeviceManager:
 
         self.config_data['known_devices'] = known
         self._write_config(self.config_data)
+        # NOTE: heartbeat is started from app_controller after WiFi connects
+        # so phone IP is guaranteed available at that point
 
-        if config.USE_REAL_NETWORK and credentials.get('phone_address'):
-            self._start_heartbeat(credentials['phone_address'])
+    def start_heartbeat_after_wifi(self):
+        """
+        Called from app_controller after WiFi is confirmed connected.
+        Gets phone IP from gateway — reliable since Pi is on phone's hotspot.
+        """
+        if not config.USE_REAL_NETWORK:
+            return
+        phone_ip = self.network.wifi.get_phone_ip()
+        if phone_ip:
+            print(f"[DEVICE] Starting heartbeat → phone at {phone_ip}")
+            self._start_heartbeat(phone_ip)
+        else:
+            print("[DEVICE] Heartbeat skipped — could not resolve phone IP")
 
     def update_last_connected(self, ble_mac):
-        """Update timestamp on successful reconnect"""
+        """Update timestamp on successful reconnect."""
         from datetime import datetime
         known = self.get_known_devices()
         for device in known:
@@ -111,29 +124,21 @@ class DeviceManager:
                 break
         self.config_data['known_devices'] = known
         self._write_config(self.config_data)
+
     def reset_pairing(self):
-       """Clear all known devices, keep device ID"""
-       if self.heartbeat:
-           self.heartbeat.stop()
-           self.heartbeat = None
-       self.config_data['known_devices'] = []
-       self._write_config(self.config_data)
-       print("[DEVICE] All pairing data cleared")
+        """Clear all known devices, keep device ID."""
+        if self.heartbeat:
+            self.heartbeat.stop()
+            self.heartbeat = None
+        self.config_data['known_devices'] = []
+        self._write_config(self.config_data)
+        print("[DEVICE] All pairing data cleared")
 
     def forget_device(self):
-       self.reset_pairing()
-
-    '''def forget_device(self):
-       """Clear pairing info, revert to unpaired state"""
-       self.config.pop('paired', None)
-       self.config.pop('phone_address', None)
-       self.config.pop('ssid', None)
-       with open(self.CONFIG_FILE, 'w') as f:
-           json.dump(self.config, f, indent=2)
-       print("[DEVICE] Pairing forgotten.")'''
+        self.reset_pairing()
 
     def remove_device(self, ble_mac):
-        """Remove a single device by BLE MAC"""
+        """Remove a single device by BLE MAC."""
         known = [
             d for d in self.get_known_devices()
             if d.get('ble_mac') != ble_mac
@@ -145,40 +150,37 @@ class DeviceManager:
     # ── Boot Scan ──────────────────────────────────────
 
     def scan_for_known_devices(self, timeout=10):
-       """
-       Scan BLE for any previously paired device.
-       Returns full known_device dict if found, else None.
-       Works identically in both mock and real mode.
-       """
-       known = self.get_known_devices()
-       if not known:
-           print("[DEVICE] No known devices to scan for")
-           return None
+        """
+        Scan BLE for any previously paired device.
+        Returns full known_device dict if found, else None.
+        """
+        known = self.get_known_devices()
+        if not known:
+            print("[DEVICE] No known devices to scan for")
+            return None
 
-       known_macs  = {d['ble_mac']: d for d in known}
-       known_names = {d['ble_name']: d for d in known}
+        known_macs  = {d['ble_mac']: d for d in known}
+        known_names = {d['ble_name']: d for d in known}
 
-       print(f"[DEVICE] Scanning for {len(known)} known device(s)... "
-             f"({'mock' if not config.USE_REAL_NETWORK else 'real'})")
+        print(f"[DEVICE] Scanning for {len(known)} known device(s)... "
+              f"({'mock' if not config.USE_REAL_NETWORK else 'real'})")
 
-       found = self.network.scan_for_devices(
-           known_macs=list(known_macs.keys()),
-           known_names=list(known_names.keys()),
-           timeout=timeout
+        found = self.network.scan_for_devices(
+            known_macs=list(known_macs.keys()),
+            known_names=list(known_names.keys()),
+            timeout=timeout
         )
 
-       if found:
-           # Look up the full known_device entry by MAC or name
-           mac   = found.get('mac', '')
-           name  = found.get('name', '')
-           match = known_macs.get(mac) or known_names.get(name)
-           if match:
-               print(f"[DEVICE] Found known device: {match['ble_name']}")
-               return match
+        if found:
+            mac   = found.get('mac', '')
+            name  = found.get('name', '')
+            match = known_macs.get(mac) or known_names.get(name)
+            if match:
+                print(f"[DEVICE] Found known device: {match['ble_name']}")
+                return match
 
-       print("[DEVICE] No known devices found nearby")
-       return None
-
+        print("[DEVICE] No known devices found nearby")
+        return None
 
     # ── Heartbeat ──────────────────────────────────────
 
@@ -188,8 +190,8 @@ class DeviceManager:
             self.heartbeat.stop()
         self.heartbeat = HeartbeatManager(
             phone_address=phone_address,
-            on_connected=lambda: print("[DEVICE] Phone app ONLINE"),
-            on_disconnected=lambda: print("[DEVICE] Phone app OFFLINE")
+            on_connected=lambda: print("[DEVICE] Phone app ONLINE ✓"),
+            on_disconnected=lambda: print("[DEVICE] Phone app OFFLINE ✗")
         )
         self.heartbeat.start()
 
@@ -323,7 +325,6 @@ class NetworkManager:
         return False
 
     def notify_enable_hotspot(self):
-        """Tell phone via BLE that its hotspot needs to be turned on"""
         if hasattr(self.ble, 'notify_enable_hotspot'):
             return self.ble.notify_enable_hotspot()
         if hasattr(self.wifi, 'notify_enable_hotspot'):
