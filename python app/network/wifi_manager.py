@@ -46,40 +46,22 @@ class WiFiManager:
     # ── WiFi connect ──────────────────────────────────────────────────────
 
     def connect(self, ssid: str, password: str = None) -> bool:
-        """
-        Connect to phone's hotspot via nmcli.
-        Uses 2s delay so BLE can ACK before network interface changes.
-        password=None → uses saved nmcli profile (known device / auto-connect).
-        password=str  → new pair, connects with explicit credentials.
-        Polls up to 45s — accounts for 2s BLE delay + blocking rescan + 30s nmcli.
-        """
         print(f"[WIFI] Scheduling connection to '{ssid}' in 2s...")
-
         threading.Thread(
             target=self._do_connect, args=(ssid, password), daemon=True
         ).start()
-
         for _ in range(45):
             time.sleep(1)
             if self.is_connected_to(ssid):
                 print(f"[WIFI] Connected to '{ssid}' ✓")
                 return True
-
         print(f"[WIFI] Failed to connect to '{ssid}' after 45s")
         return False
 
     def _do_connect(self, ssid: str, password: str = None):
-        """
-        Internal: execute nmcli connect.
-        Uses 'nmcli dev wifi list --rescan yes' which BLOCKS until scan
-        is fully complete — unlike 'nmcli dev wifi rescan' which is
-        fire-and-forget and returns before NetworkManager's cache is updated,
-        causing 'No network with SSID found' even when hotspot is active.
-        """
         try:
             time.sleep(2)  # BLE ACK window
 
-            # ── Step 1: blocking rescan ───────────────────────────────────────
             print("[WIFI] Running blocking rescan (nmcli dev wifi list --rescan yes)...")
             scan_result = subprocess.run(
                 ['nmcli', 'dev', 'wifi', 'list', '--rescan', 'yes'],
@@ -90,7 +72,6 @@ class WiFiManager:
             else:
                 print(f"[WIFI] '{ssid}' confirmed visible in scan ✓")
 
-            # ── Step 2: pick connect command ──────────────────────────────────
             if password:
                 cmd = ['nmcli', 'dev', 'wifi', 'connect', ssid, 'password', password]
                 print(f"[WIFI] Connecting to '{ssid}' with password")
@@ -101,7 +82,6 @@ class WiFiManager:
                 print(f"[WIFI] No saved profile for '{ssid}' and no password — cannot connect")
                 return
 
-            # ── Step 3: connect ───────────────────────────────────────────────
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=30
             )
@@ -127,7 +107,6 @@ class WiFiManager:
             print(f"[WIFI] nmcli error: {e}")
 
     def _profile_exists(self, ssid: str) -> bool:
-        """Check if nmcli has a saved connection profile for this SSID."""
         try:
             result = subprocess.run(
                 ['nmcli', '-t', '-f', 'NAME', 'con', 'show'],
@@ -138,7 +117,6 @@ class WiFiManager:
             return False
 
     def is_connected_to(self, ssid: str) -> bool:
-        """Check if currently connected to the given SSID."""
         try:
             result = subprocess.run(
                 ['iwgetid', '-r'],
@@ -151,7 +129,6 @@ class WiFiManager:
     # ── IP helpers ────────────────────────────────────────────────────────
 
     def get_local_ip(self) -> str:
-        """Get Pi's current IP on wlan0 (phone's hotspot)."""
         if HAS_NETIFACES:
             try:
                 addrs = netifaces.ifaddresses('wlan0')
@@ -172,7 +149,6 @@ class WiFiManager:
             return None
 
     def get_phone_ip(self) -> str:
-        """Get phone's IP — it's the gateway when Pi is on phone's hotspot."""
         if self.phone_ip:
             return self.phone_ip
         if HAS_NETIFACES:
@@ -189,7 +165,13 @@ class WiFiManager:
     # ── Flask server ──────────────────────────────────────────────────────
 
     def start_server(self):
-        """Start Flask server to receive results from phone."""
+        """
+        Start Flask server. Shuts down any previously running instance first
+        to prevent 'Address already in use' on reconnect.
+        """
+        # FIX: kill previous instance before rebinding — prevents OSError port in use
+        self.stop()
+
         self.server_ready.clear()
         self.flask_thread = threading.Thread(
             target=self._run_flask, daemon=True, name='WiFiServer'
@@ -223,9 +205,14 @@ class WiFiManager:
             return jsonify(status='received')
 
         try:
-            # make_server() binds the socket immediately — server_ready.set()
-            # here is accurate unlike app.run() which sets up socket asynchronously
-            self._flask_server = make_server('0.0.0.0', self.FLASK_PORT, app)
+            server = make_server('0.0.0.0', self.FLASK_PORT, app)
+            # FIX: allow port reuse immediately after previous server closes
+            server.socket.setsockopt(
+                __import__('socket').SOL_SOCKET,
+                __import__('socket').SO_REUSEADDR,
+                1
+            )
+            self._flask_server = server
             self.server_ready.set()
             print(f"[WIFI SERVER] Listening on 0.0.0.0:{self.FLASK_PORT}")
             self._flask_server.serve_forever()
@@ -236,14 +223,12 @@ class WiFiManager:
     # ── Send to phone ─────────────────────────────────────────────────────
 
     def send_image(self, image_path: str) -> bool:
-        """POST image file to phone's server. Retries 3 times with 2s delay."""
         if not HAS_REQUESTS:
             print("[WIFI] requests not available — cannot send image")
             return False
         url = self._build_phone_url('upload/image')
         if not url:
             return False
-
         for attempt in range(1, 4):
             try:
                 print(f"[WIFI] Sending image to phone (attempt {attempt}/3)...")
@@ -262,19 +247,16 @@ class WiFiManager:
                 print(f"[WIFI] Image send error (attempt {attempt}): {e}")
             if attempt < 3:
                 time.sleep(2)
-
         print("[WIFI] Image send failed after 3 attempts")
         return False
 
     def send_file(self, file_path: str) -> bool:
-        """POST CSV file to phone's server. Retries 3 times with 2s delay."""
         if not HAS_REQUESTS:
             print("[WIFI] requests not available — cannot send CSV")
             return False
         url = self._build_phone_url('upload/csv')
         if not url:
             return False
-
         for attempt in range(1, 4):
             try:
                 fname = os.path.basename(file_path)
@@ -294,14 +276,12 @@ class WiFiManager:
                 print(f"[WIFI] CSV send error (attempt {attempt}): {e}")
             if attempt < 3:
                 time.sleep(2)
-
         print("[WIFI] CSV send failed after 3 attempts")
         return False
 
     # ── Wait for results ──────────────────────────────────────────────────
 
     def wait_for_message(self, message_type: str, timeout: int = 120):
-        """Block until phone POSTs a result. Returns dict or None on timeout."""
         print(f"[WIFI] Waiting for '{message_type}' from phone (timeout: {timeout}s)...")
         event = self.result_events.get(message_type)
         if not event:
@@ -331,9 +311,17 @@ class WiFiManager:
         return url
 
     def stop(self):
-        """Shut down Flask server cleanly (important for app restart)."""
+        """
+        Shut down Flask server cleanly.
+        Called before every start_server() to prevent port reuse errors.
+        """
         if self._flask_server:
             print("[WIFI] Shutting down Flask server...")
-            self._flask_server.shutdown()
+            try:
+                self._flask_server.shutdown()
+            except Exception as e:
+                print(f"[WIFI] Flask shutdown warning (non-fatal): {e}")
             self._flask_server = None
             print("[WIFI] Flask server stopped ✓")
+        # FIX: reset phone IP so stale gateway from previous session isn't reused
+        self.phone_ip = None

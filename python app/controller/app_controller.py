@@ -131,7 +131,7 @@ class AppController:
                 self.current_connected_mac = blemac
                 self.dm.update_last_connected(blemac)
                 self.dm.network.start_wifi_server()
-                self.dm.start_heartbeat_after_wifi()  # FIX: start after WiFi confirmed
+                self.dm.start_heartbeat_after_wifi()
                 print("[CONTROLLER] Auto-connect success → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
@@ -253,7 +253,7 @@ class AppController:
                     time.sleep(1)
                 self.dm.network.stop_ble()
                 self.dm.network.start_wifi_server()
-                self.dm.start_heartbeat_after_wifi()  # FIX: start after WiFi confirmed
+                self.dm.start_heartbeat_after_wifi()
                 print("[CONTROLLER] New pair complete → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
@@ -272,7 +272,7 @@ class AppController:
         self.dm.network.stop_ble()
         self.sm.get_screen('pairing').show_qr()
 
-    # ── Device management ────────────────────────────────────────────────
+    # ── Device management ─────────────────────────────────────────────────
 
     def reset_pairing(self):
         self.dm.reset_pairing()
@@ -281,6 +281,11 @@ class AppController:
         print("[CONTROLLER] All pairing data cleared")
 
     def forget_device(self):
+        """
+        Intentional user action — removes device from saved list permanently.
+        Called ONLY by the 'Forget Device' button on the home screen.
+        Do NOT call this on heartbeat failure — use on_phone_disconnected() instead.
+        """
         if self.current_connected_mac:
             known = self.dm.get_known_devices()
             match = next(
@@ -292,6 +297,29 @@ class AppController:
             print(f"[CONTROLLER] Forgot device: {name}")
         else:
             print("[CONTROLLER] forget_device: no active device to forget")
+        self.sm.current = 'pairing'
+        Clock.schedule_once(lambda dt: self.start_pairing_screen(), 0.3)
+
+    def on_phone_disconnected(self):
+        """
+        FIX: Heartbeat/disconnect callback — goes back to pairing WITHOUT
+        deleting the saved device. Phone can reconnect without re-pairing.
+        Previously the heartbeat was calling forget_device() which deleted
+        the device, causing the Pi to lose the saved profile and loop forever.
+        Your heartbeat manager should call this instead of forget_device().
+        """
+        name = 'phone'
+        if self.current_connected_mac:
+            known = self.dm.get_known_devices()
+            match = next(
+                (d for d in known if d['ble_mac'] == self.current_connected_mac), None
+            )
+            if match:
+                name = match['ble_name']
+
+        print(f"[CONTROLLER] Phone disconnected ({name}) — returning to pairing, device kept")
+        self.dm.network.stop()              # stop Flask server cleanly
+        self.current_connected_mac = None
         self.sm.current = 'pairing'
         Clock.schedule_once(lambda dt: self.start_pairing_screen(), 0.3)
 
