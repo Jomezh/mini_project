@@ -25,7 +25,7 @@ CHAR_BLE_NAME_UUID  = '12345678-1234-1234-1234-123456789ab3'
 CHAR_BLE_MAC_UUID   = '12345678-1234-1234-1234-123456789ab4'
 CHAR_IP_UUID        = '12345678-1234-1234-1234-123456789ab5'
 CHAR_STATUS_UUID    = '12345678-1234-1234-1234-123456789ab6'
-CHAR_DEVICE_ID_UUID = '12345678-1234-1234-1234-123456789ab7'  # NEW
+CHAR_DEVICE_ID_UUID = '12345678-1234-1234-1234-123456789ab7'
 
 _WRITABLE_CHARS = {
     CHAR_SSID_UUID,
@@ -36,7 +36,7 @@ _WRITABLE_CHARS = {
 _READABLE_CHARS = {
     CHAR_IP_UUID,
     CHAR_STATUS_UUID,
-    CHAR_DEVICE_ID_UUID,  # NEW
+    CHAR_DEVICE_ID_UUID,
 }
 
 _UUID_TO_KEY = {
@@ -71,7 +71,6 @@ class BLEManager:
         self._outgoing       = {}
         self._creds_received = threading.Event()
 
-        # ── Connection state tracking ────────────────────────────────────────
         self._connected_clients = set()
         self._connection_lock   = threading.Lock()
 
@@ -160,7 +159,6 @@ class BLEManager:
 
     @property
     def is_phone_connected(self) -> bool:
-        """True if at least one phone is currently connected via BLE."""
         with self._connection_lock:
             return len(self._connected_clients) > 0
 
@@ -187,7 +185,6 @@ class BLEManager:
         print("[BLE] Stopped")
 
     async def _stop_server(self):
-        """Properly awaited server stop."""
         try:
             await self._server.stop()
         except Exception as e:
@@ -261,10 +258,6 @@ class BLEManager:
             )
 
         await self._server.start()
-
-        # ── Wait for BlueZ to fully register service ─────────────────────────
-        # Without this delay phone's discoverServices() returns empty list
-        # and drops with CONNECTION_TERMINATED_BY_LOCAL_HOST (status 22)
         await asyncio.sleep(_GATT_READY_DELAY)
 
         print(f"[BLE] GATT server ready — "
@@ -289,7 +282,6 @@ class BLEManager:
     # ── GATT Callbacks ────────────────────────────────────────────────────────
 
     def _on_write(self, characteristic, value: bytearray):
-        """Phone wrote a credential field."""
         uuid = str(characteristic.uuid).lower()
         key  = _UUID_TO_KEY.get(uuid)
         if key is None:
@@ -316,7 +308,6 @@ class BLEManager:
             self._creds_received.set()
 
     def _on_read(self, characteristic, **kwargs) -> bytearray:
-        """Phone read a Pi-managed characteristic."""
         uuid = str(characteristic.uuid).lower()
 
         if uuid == CHAR_IP_UUID:
@@ -336,9 +327,7 @@ class BLEManager:
         return bytearray()
 
     async def _notify_characteristic(self, char_uuid: str):
-        """Push notify to connected phone client."""
         try:
-            # bless BlueZ backend update_value() is synchronous — do NOT await
             result = self._server.update_value(GATT_SERVICE_UUID, char_uuid)
             if result:
                 print(f"[BLE] ✓ Notified characteristic: ...{char_uuid[-4:]}")
@@ -359,23 +348,29 @@ class BLEManager:
         known_macs_upper  = {m.upper() for m in known_macs  if m}
         known_names_lower = {n.lower() for n in known_names if n}
 
-        devices = await BleakScanner.discover(timeout=timeout)
-        print(f"[BLE] Scan complete — {len(devices)} device(s) visible nearby")
+        found_device = None
 
-        for device in devices:
+        def detection_callback(device, advertisement_data):
+            nonlocal found_device
+            if found_device:
+                return
+
             mac  = (device.address or '').upper()
-            name = (device.name    or '')
+            name = (device.name    or '').strip()
 
-            # Some Android phones (Motorola, iQOO) embed their advertised name
-            # inside ServiceData UUID 00000720 instead of standard Name field
-            if not name and device.metadata:
-                svc_data = device.metadata.get('service_data', {})
+            # bleak ≥0.20: name comes from advertisement_data.local_name
+            if not name and advertisement_data:
+                name = (getattr(advertisement_data, 'local_name', '') or '').strip()
+
+            # Motorola/iQOO embed name in ServiceData UUID 00000720
+            if not name and advertisement_data:
+                svc_data = getattr(advertisement_data, 'service_data', {}) or {}
                 for uuid_key, raw_bytes in svc_data.items():
                     if '00000720' in str(uuid_key).lower():
                         try:
                             extracted = raw_bytes.decode(
                                 'utf-8', errors='ignore'
-                            ).rstrip('\x00')
+                            ).rstrip('\x00').strip()
                             if extracted:
                                 name = extracted
                                 print(f"[BLE] ServiceData name extracted: '{name}'")
@@ -383,9 +378,29 @@ class BLEManager:
                         except Exception:
                             pass
 
-            if mac in known_macs_upper or name.lower() in known_names_lower:
-                print(f"[BLE] ✓ Found known device: {name} ({device.address})")
-                return {'mac': device.address, 'name': name or ''}
+            mac_match  = mac in known_macs_upper
+            name_match = name.lower() in known_names_lower
 
-        print("[BLE] No known devices found in scan")
+            if mac_match or name_match:
+                print(f"[BLE] ✓ Found known device: '{name}' ({device.address})")
+                found_device = {'mac': device.address, 'name': name or ''}
+
+        scanner = BleakScanner(detection_callback=detection_callback)
+        await scanner.start()
+        print(f"[BLE] Scan started — waiting up to {timeout}s...")
+
+        elapsed = 0
+        while elapsed < timeout:
+            await asyncio.sleep(0.5)
+            elapsed += 0.5
+            if found_device:
+                break
+
+        await scanner.stop()
+        count = len(await BleakScanner.discover(timeout=0.1))
+
+        if found_device:
+            return found_device
+
+        print(f"[BLE] Scan complete — no known devices found")
         return None

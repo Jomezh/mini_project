@@ -9,6 +9,7 @@ from kivy.uix.image import Image
 from kivy.core.image import Image as CoreImage
 from kivy.clock import Clock
 
+
 GATT_SERVICE_UUID = '12345678-1234-1234-1234-123456789ab0'  # Must match ble_manager.py
 
 
@@ -16,10 +17,10 @@ class PairingScreen(Screen):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.controller       = None
-        self.retry_timer      = None
-        self.retry_countdown  = 0
-        self.action_btn_mode  = 'scan'  # scan | cancel | retry
+        self.controller          = None
+        self.retry_timer         = None
+        self.retry_countdown     = 0
+        self.action_btn_mode     = 'scan'  # scan | cancel | retry
         self.hotspot_device      = ''
         self.hotspot_retries_left = 0
         self.build_ui()
@@ -120,7 +121,7 @@ class PairingScreen(Screen):
     # ── QR generation ─────────────────────────────────────────────────────
 
     def generate_qr(self, device_id: str):
-        ble_name = f'MiniK-{device_id[:6]}'
+        ble_name = f'MiniK-{device_id[-6:]}'  # FIX: was [:6] → 'MiniK-MINIK-'
         qr_data  = (
             f'minik:pair'
             f'?device={device_id}'
@@ -139,7 +140,7 @@ class PairingScreen(Screen):
         buf = BytesIO()
         img.save(buf, format='PNG')
         buf.seek(0)
-        self.qr_image.texture    = CoreImage(buf, ext='png').texture
+        self.qr_image.texture     = CoreImage(buf, ext='png').texture
         self.device_id_label.text = f'Device: {device_id}'
 
     # ── State methods (called by app_controller.py) ───────────────────────
@@ -200,24 +201,24 @@ class PairingScreen(Screen):
                              retries_left: int, retry_in: int):
         """WiFi failed — hotspot is off. Show countdown + Retry Now button."""
         self.stop_all_timers()
-        self.retry_countdown       = retry_in
-        self.hotspot_device        = device_name
-        self.hotspot_retries_left  = retries_left
-        self.status_label.color    = (1.0, 0.65, 0.15, 1)
-        self.qr_image.opacity      = 0
-        self.pair_btn.disabled     = False
-        self.action_btn_mode       = 'retry'
+        self.retry_countdown      = retry_in
+        self.hotspot_device       = device_name
+        self.hotspot_retries_left = retries_left
+        self.status_label.color   = (1.0, 0.65, 0.15, 1)
+        self.qr_image.opacity     = 0
+        self.pair_btn.disabled    = False
+        self.action_btn_mode      = 'retry'
         self.action_btn.background_color = (0.55, 0.35, 0.05, 1)
-        self.action_btn.disabled   = False
+        self.action_btn.disabled  = False
         self.update_hotspot_label()
         self.retry_timer = Clock.schedule_interval(self.tick_hotspot_prompt, 1.0)
 
     def show_error(self, message: str):
         self.stop_all_timers()
-        self.status_label.text    = message
-        self.status_label.color   = (1.0, 0.3, 0.3, 1)
-        self.pair_btn.disabled    = False
-        self.action_btn.disabled  = False
+        self.status_label.text   = message
+        self.status_label.color  = (1.0, 0.3, 0.3, 1)
+        self.pair_btn.disabled   = False
+        self.action_btn.disabled = False
 
     # ── Hotspot countdown ─────────────────────────────────────────────────
 
@@ -225,10 +226,9 @@ class PairingScreen(Screen):
         self.retry_countdown -= 1
         if self.retry_countdown <= 0:
             self.stop_all_timers()
-            # FIX: previously returned here leaving label frozen at "1s"
-            self.status_label.text   = f'Connecting to {self.hotspot_device}...'
-            self.status_label.color  = (0.3, 0.9, 0.3, 1)
-            self.action_btn.text     = 'Connecting...'
+            self.status_label.text  = f'Connecting to {self.hotspot_device}...'
+            self.status_label.color = (0.3, 0.9, 0.3, 1)
+            self.action_btn.text    = 'Connecting...'
             self.action_btn.disabled = True
             return False  # stops Clock.schedule_interval cleanly
         self.update_hotspot_label()
