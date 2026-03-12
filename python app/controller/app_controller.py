@@ -278,6 +278,9 @@ class AppController:
         self.dm.reset_pairing()
         self.current_connected_mac = None
         self.sm.get_screen('pairing').show_qr()
+        Clock.schedule_once(
+        lambda dt: self.sm.get_screen('pairing').show_qr(), 0.1
+       )                
         print("[CONTROLLER] All pairing data cleared")
 
     def forget_device(self):
