@@ -28,7 +28,7 @@ class HomeScreen(Screen):
         )
 
         subtitle = Label(
-            text='VOC based food spoilage\ndetection system',
+            text='VOC based food spoilage detection system',
             font_size='11sp',
             color=(0.7, 0.7, 0.7, 1),
             size_hint=(1, 0.4),
