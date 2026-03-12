@@ -18,7 +18,9 @@ class AppController:
         self.ble_timeout_event     = None
         self.current_test_data     = {}
         self.current_connected_mac = None
-        self._wifi_cancel          = Event()    # ← signals retry loops to stop
+        self._wifi_cancel          = Event()
+        self._cnn_cancel           = Event()
+        self._cnn_timeout_event    = None
 
     def on_app_start(self):
         Thread(target=self.dm.hardware.initialize, daemon=True).start()
@@ -29,6 +31,8 @@ class AppController:
             self.priming_check_event.cancel()
         if self.ble_timeout_event:
             self.ble_timeout_event.cancel()
+        if self._cnn_timeout_event:
+            self._cnn_timeout_event.cancel()
 
     def cancel_wifi_connect(self):
         """Instantly unblocks any running WiFi retry sleep."""
@@ -107,7 +111,7 @@ class AppController:
         blemac = known_device['ble_mac']
         name   = known_device['ble_name']
 
-        self._wifi_cancel.clear()               # reset before loop starts
+        self._wifi_cancel.clear()
 
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             if self._wifi_cancel.is_set():
@@ -128,7 +132,6 @@ class AppController:
                     ), 0
             )
 
-            # Interruptible — wakes instantly if cancel_wifi_connect() is called
             cancelled = self._wifi_cancel.wait(timeout=wait)
             if cancelled:
                 print("[CONTROLLER] Auto-connect cancelled during wait")
@@ -174,7 +177,7 @@ class AppController:
     # ── New BLE pairing flow ──────────────────────────────────────────────
 
     def start_pairing(self):
-        self.cancel_wifi_connect()              # stop any running retry loop instantly
+        self.cancel_wifi_connect()
         screen = self.sm.get_screen('pairing')
         screen.show_waiting_ble()
         success = self.dm.network.start_ble_advertising()
@@ -237,7 +240,7 @@ class AppController:
         blemac   = credentials.get('ble_mac', '')
         name     = credentials.get('ble_name', 'your phone')
 
-        self._wifi_cancel.clear()               # reset before loop starts
+        self._wifi_cancel.clear()
 
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             if self._wifi_cancel.is_set():
@@ -258,7 +261,6 @@ class AppController:
                     ), 0
             )
 
-            # Interruptible — wakes instantly if cancel_wifi_connect() is called
             cancelled = self._wifi_cancel.wait(timeout=wait)
             if cancelled:
                 print("[CONTROLLER] New pair cancelled during wait")
@@ -305,7 +307,7 @@ class AppController:
     # ── Device management ─────────────────────────────────────────────────
 
     def reset_pairing(self):
-        self.cancel_wifi_connect()              # stop any retry loop before clearing
+        self.cancel_wifi_connect()
         self.dm.reset_pairing()
         self.current_connected_mac = None
         self.sm.get_screen('pairing').show_qr()
@@ -399,14 +401,21 @@ class AppController:
             )
             Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
             return
+
         self.current_test_data['image_path'] = image_path
         print(f"[CONTROLLER] Image captured: {image_path}")
+
         import config
         if config.USE_REAL_NETWORK:
             success = self.dm.network.send_image_to_phone(image_path)
             if success:
+                self._cnn_cancel.clear()
                 Clock.schedule_once(
                     lambda dt: setattr(self.sm, 'current', 'analyzing'), 0
+                )
+                # Reveal cancel button after 35s
+                self._cnn_timeout_event = Clock.schedule_once(
+                    lambda dt: self._show_cnn_cancel_btn(), 35
                 )
                 Thread(target=self.wait_for_cnn_result, daemon=True).start()
             else:
@@ -421,17 +430,74 @@ class AppController:
             self.delete_image(image_path)
             Clock.schedule_once(lambda dt: self.proceed_to_reading(), 0)
 
+    def _show_cnn_cancel_btn(self):
+        if self.sm.current == 'analyzing':
+            self.sm.get_screen('analyzing').show_cancel_btn()
+
+    def cancel_analysis(self):
+        """Called by cancel button on analyzing screen."""
+        self._cnn_cancel.set()
+        if self._cnn_timeout_event:
+            self._cnn_timeout_event.cancel()
+            self._cnn_timeout_event = None
+        image_path = self.current_test_data.get('image_path')
+        if image_path:
+            self.delete_image(image_path)
+        self.current_test_data = {}
+        print("[CONTROLLER] CNN analysis cancelled by user")
+        Clock.schedule_once(lambda dt: self.go_to_home(), 0)
+
     def wait_for_cnn_result(self):
         try:
-            result = self.dm.network.wait_for_cnn_result()
+            result = self.dm.network.wait_for_cnn_result(
+                cancel_event=self._cnn_cancel
+            )
+            if self._cnn_cancel.is_set():
+                return                          # cancel_analysis() already navigated
             if result:
                 Clock.schedule_once(
                     lambda dt: self.on_cnn_result_received(result), 0
                 )
+            else:
+                Clock.schedule_once(lambda dt: self._on_cnn_timeout(), 0)
         except Exception as e:
             print(f"[CONTROLLER] !! CNN result thread crash: {e}")
+            Clock.schedule_once(lambda dt: self._on_cnn_timeout(), 0)
+
+    def _on_cnn_timeout(self):
+        if self._cnn_timeout_event:
+            self._cnn_timeout_event.cancel()
+            self._cnn_timeout_event = None
+        image_path = self.current_test_data.get('image_path')
+        if image_path:
+            self.delete_image(image_path)
+        self.current_test_data = {}
+        self.sm.get_screen('analyzing').show_timeout_message(
+            on_home=lambda: self.go_to_home()
+        )
 
     def on_cnn_result_received(self, result):
+        if self._cnn_timeout_event:
+            self._cnn_timeout_event.cancel()
+            self._cnn_timeout_event = None
+
+        food_type      = result.get('food_type', '').strip().lower()
+        no_match_values = {'no_match', 'no match', 'unknown', 'none', '', 'not food'}
+
+        if food_type in no_match_values:
+            print(f"[CONTROLLER] CNN returned no-match: {result}")
+            image_path = self.current_test_data.get('image_path')
+            if image_path:
+                self.delete_image(image_path)
+            self.current_test_data = {}
+            self.sm.current = 'result'
+            self.sm.get_screen('result').display_no_match(
+                on_home=lambda: Clock.schedule_once(
+                    lambda dt: self.go_to_home(), 4
+                )
+            )
+            return
+
         self.current_test_data['food_type']       = result.get('food_type')
         self.current_test_data['sensors_to_read'] = result.get('sensors')
         image_path = self.current_test_data.get('image_path')
