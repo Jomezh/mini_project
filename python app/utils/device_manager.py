@@ -26,7 +26,7 @@ class DeviceManager:
         self.cleanup_manager = CleanupManager(base_dir)
         self.cleanup_manager.start()
 
-    # ── Device ID ──────────────────────────────────────
+    # ── Device ID ─────────────────────────────────────────────────────────
 
     def get_device_id(self):
         return self.device_id
@@ -61,7 +61,7 @@ class DeviceManager:
         with open(self.CONFIG_FILE, 'w') as f:
             json.dump(data, f, indent=2)
 
-    # ── Known Devices ──────────────────────────────────
+    # ── Known Devices ─────────────────────────────────────────────────────
 
     def get_known_devices(self):
         return self.config_data.get('known_devices', [])
@@ -70,52 +70,29 @@ class DeviceManager:
         return len(self.get_known_devices()) > 0
 
     def save_pairing(self, credentials):
-        """Add or update device in known_devices list."""
         from datetime import datetime
-
         known   = self.get_known_devices()
         ble_mac = credentials.get('ble_mac', '')
-
-        entry = {
+        entry   = {
             'ble_name':       credentials.get('ble_name', ''),
             'ble_mac':        ble_mac,
             'ssid':           credentials.get('ssid', ''),
             'phone_address':  credentials.get('phone_address', ''),
             'last_connected': datetime.now().isoformat()
         }
-
         existing = next(
             (d for d in known if d.get('ble_mac') == ble_mac), None
         )
-
         if existing:
             known[known.index(existing)] = entry
             print(f"[DEVICE] Updated known device: {entry['ble_name']}")
         else:
             known.append(entry)
             print(f"[DEVICE] New device saved: {entry['ble_name']}")
-
         self.config_data['known_devices'] = known
         self._write_config(self.config_data)
-        # NOTE: heartbeat is started from app_controller after WiFi connects
-        # so phone IP is guaranteed available at that point
-
-    def start_heartbeat_after_wifi(self):
-        """
-        Called from app_controller after WiFi is confirmed connected.
-        Gets phone IP from gateway — reliable since Pi is on phone's hotspot.
-        """
-        if not config.USE_REAL_NETWORK:
-            return
-        phone_ip = self.network.wifi.get_phone_ip()
-        if phone_ip:
-            print(f"[DEVICE] Starting heartbeat → phone at {phone_ip}")
-            self._start_heartbeat(phone_ip)
-        else:
-            print("[DEVICE] Heartbeat skipped — could not resolve phone IP")
 
     def update_last_connected(self, ble_mac):
-        """Update timestamp on successful reconnect."""
         from datetime import datetime
         known = self.get_known_devices()
         for device in known:
@@ -126,7 +103,6 @@ class DeviceManager:
         self._write_config(self.config_data)
 
     def reset_pairing(self):
-        """Clear all known devices, keep device ID."""
         if self.heartbeat:
             self.heartbeat.stop()
             self.heartbeat = None
@@ -138,7 +114,6 @@ class DeviceManager:
         self.reset_pairing()
 
     def remove_device(self, ble_mac):
-        """Remove a single device by BLE MAC."""
         known = [
             d for d in self.get_known_devices()
             if d.get('ble_mac') != ble_mac
@@ -147,30 +122,22 @@ class DeviceManager:
         self._write_config(self.config_data)
         print(f"[DEVICE] Removed device: {ble_mac}")
 
-    # ── Boot Scan ──────────────────────────────────────
+    # ── Boot Scan ─────────────────────────────────────────────────────────
 
     def scan_for_known_devices(self, timeout=10):
-        """
-        Scan BLE for any previously paired device.
-        Returns full known_device dict if found, else None.
-        """
         known = self.get_known_devices()
         if not known:
             print("[DEVICE] No known devices to scan for")
             return None
-
         known_macs  = {d['ble_mac']: d for d in known}
         known_names = {d['ble_name']: d for d in known}
-
         print(f"[DEVICE] Scanning for {len(known)} known device(s)... "
               f"({'mock' if not config.USE_REAL_NETWORK else 'real'})")
-
         found = self.network.scan_for_devices(
             known_macs=list(known_macs.keys()),
             known_names=list(known_names.keys()),
             timeout=timeout
         )
-
         if found:
             mac   = found.get('mac', '')
             name  = found.get('name', '')
@@ -178,24 +145,50 @@ class DeviceManager:
             if match:
                 print(f"[DEVICE] Found known device: {match['ble_name']}")
                 return match
-
         print("[DEVICE] No known devices found nearby")
         return None
 
-    # ── Heartbeat ──────────────────────────────────────
+    # ── Heartbeat ─────────────────────────────────────────────────────────
 
-    def _start_heartbeat(self, phone_address):
+    def start_heartbeat_after_wifi(self, on_disconnected=None):
+        """
+        Called from app_controller after WiFi is confirmed connected.
+        on_disconnected: callable — fired when phone goes offline.
+        Pass controller.on_phone_disconnected so navigation is handled.
+        """
+        if not config.USE_REAL_NETWORK:
+            return
+        phone_ip = self.network.wifi.get_phone_ip()
+        if phone_ip:
+            print(f"[DEVICE] Starting heartbeat → phone at {phone_ip}")
+            self._start_heartbeat(phone_ip, on_disconnected=on_disconnected)
+        else:
+            print("[DEVICE] Heartbeat skipped — could not resolve phone IP")
+
+    def _start_heartbeat(self, phone_address, on_disconnected=None):
         from network.heartbeat_manager import HeartbeatManager
         if self.heartbeat:
             self.heartbeat.stop()
         self.heartbeat = HeartbeatManager(
             phone_address=phone_address,
             on_connected=lambda: print("[DEVICE] Phone app ONLINE ✓"),
-            on_disconnected=lambda: print("[DEVICE] Phone app OFFLINE ✗")
+            on_disconnected=on_disconnected or (
+                lambda: print("[DEVICE] Phone app OFFLINE ✗")
+            ),
         )
         self.heartbeat.start()
 
-    # ── Cleanup / Shutdown ─────────────────────────────
+    def pause_heartbeat(self):
+        """Suppress disconnect callbacks during long operations (image send, CNN wait)."""
+        if self.heartbeat:
+            self.heartbeat.pause()
+
+    def resume_heartbeat(self):
+        """Re-enable disconnect callbacks after long operation completes."""
+        if self.heartbeat:
+            self.heartbeat.resume()
+
+    # ── Cleanup / Shutdown ────────────────────────────────────────────────
 
     def cleanup(self):
         self.hardware.cleanup()
@@ -214,9 +207,7 @@ class DeviceManager:
             App.get_running_app().stop()
 
 
-# ──────────────────────────────────────────────────────
-# HardwareManager
-# ──────────────────────────────────────────────────────
+# ── HardwareManager ───────────────────────────────────────────────────────────
 
 class HardwareManager:
 
@@ -267,9 +258,7 @@ class HardwareManager:
         self.camera.cleanup()
 
 
-# ──────────────────────────────────────────────────────
-# NetworkManager
-# ──────────────────────────────────────────────────────
+# ── NetworkManager ────────────────────────────────────────────────────────────
 
 class NetworkManager:
 
@@ -338,14 +327,26 @@ class NetworkManager:
     def send_image_to_phone(self, path):
         return self.wifi.send_image(path) if self.mode == 'wifi' else False
 
-    def wait_for_cnn_result(self):
-        return self.wifi.wait_for_message('cnn_result') if self.mode == 'wifi' else None
+    def wait_for_cnn_result(self, cancel_event=None):
+        """Cancellable — pass threading.Event to unblock early."""
+        if self.mode != 'wifi':
+            return None
+        if hasattr(self.wifi, 'wait_for_cnn_result'):
+            return self.wifi.wait_for_cnn_result(cancel_event=cancel_event)
+        # fallback for mock
+        return self.wifi.wait_for_message('cnn_result')
 
     def send_csv_to_phone(self, path):
         return self.wifi.send_file(path) if self.mode == 'wifi' else False
 
-    def wait_for_ml_result(self):
-        return self.wifi.wait_for_message('ml_result') if self.mode == 'wifi' else None
+    def wait_for_ml_result(self, cancel_event=None):
+        """Cancellable — pass threading.Event to unblock early."""
+        if self.mode != 'wifi':
+            return None
+        if hasattr(self.wifi, 'wait_for_ml_result'):
+            return self.wifi.wait_for_ml_result(cancel_event=cancel_event)
+        # fallback for mock
+        return self.wifi.wait_for_message('ml_result')
 
     def cleanup(self):
         if hasattr(self.ble,  'stop'): self.ble.stop()

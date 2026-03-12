@@ -35,7 +35,6 @@ class AppController:
             self._cnn_timeout_event.cancel()
 
     def cancel_wifi_connect(self):
-        """Instantly unblocks any running WiFi retry sleep."""
         self._wifi_cancel.set()
 
     # ── Navigation ────────────────────────────────────────────────────────
@@ -151,7 +150,9 @@ class AppController:
                 self.current_connected_mac = blemac
                 self.dm.update_last_connected(blemac)
                 self.dm.network.start_wifi_server()
-                self.dm.start_heartbeat_after_wifi()
+                self.dm.start_heartbeat_after_wifi(
+                    on_disconnected=self.on_phone_disconnected   # ← wired
+                )
                 print("[CONTROLLER] Auto-connect success → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
@@ -285,7 +286,9 @@ class AppController:
                     time.sleep(1)
                 self.dm.network.stop_ble()
                 self.dm.network.start_wifi_server()
-                self.dm.start_heartbeat_after_wifi()
+                self.dm.start_heartbeat_after_wifi(
+                    on_disconnected=self.on_phone_disconnected   # ← wired
+                )
                 print("[CONTROLLER] New pair complete → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
@@ -318,9 +321,9 @@ class AppController:
 
     def forget_device(self):
         """
-        Intentional user action — removes device from saved list permanently.
-        Called ONLY by the 'Forget Device' button on the home screen.
-        Do NOT call this on heartbeat failure — use on_phone_disconnected() instead.
+        Intentional user action — removes device permanently.
+        Called ONLY by the Forget Device button on home screen.
+        Do NOT call on heartbeat failure — use on_phone_disconnected() instead.
         """
         if self.current_connected_mac:
             known = self.dm.get_known_devices()
@@ -338,8 +341,8 @@ class AppController:
 
     def on_phone_disconnected(self):
         """
-        Heartbeat/disconnect callback — returns to pairing WITHOUT deleting
-        the saved device. Phone can reconnect without re-pairing.
+        Heartbeat callback — returns to pairing WITHOUT deleting the device.
+        Phone can reconnect without re-pairing.
         """
         name = 'phone'
         if self.current_connected_mac:
@@ -407,18 +410,22 @@ class AppController:
 
         import config
         if config.USE_REAL_NETWORK:
+            # Pause heartbeat — phone will be busy receiving image + running CNN
+            self.dm.pause_heartbeat()
+
             success = self.dm.network.send_image_to_phone(image_path)
             if success:
                 self._cnn_cancel.clear()
                 Clock.schedule_once(
                     lambda dt: setattr(self.sm, 'current', 'analyzing'), 0
                 )
-                # Reveal cancel button after 35s
+                # Reveal cancel button after 35s of waiting
                 self._cnn_timeout_event = Clock.schedule_once(
                     lambda dt: self._show_cnn_cancel_btn(), 35
                 )
                 Thread(target=self.wait_for_cnn_result, daemon=True).start()
             else:
+                self.dm.resume_heartbeat()          # resume on send failure
                 Clock.schedule_once(
                     lambda dt: screen.show_error("Failed to send image"), 0
                 )
@@ -435,11 +442,11 @@ class AppController:
             self.sm.get_screen('analyzing').show_cancel_btn()
 
     def cancel_analysis(self):
-        """Called by cancel button on analyzing screen."""
         self._cnn_cancel.set()
         if self._cnn_timeout_event:
             self._cnn_timeout_event.cancel()
             self._cnn_timeout_event = None
+        self.dm.resume_heartbeat()              # always resume on cancel
         image_path = self.current_test_data.get('image_path')
         if image_path:
             self.delete_image(image_path)
@@ -468,6 +475,7 @@ class AppController:
         if self._cnn_timeout_event:
             self._cnn_timeout_event.cancel()
             self._cnn_timeout_event = None
+        self.dm.resume_heartbeat()              # resume on timeout
         image_path = self.current_test_data.get('image_path')
         if image_path:
             self.delete_image(image_path)
@@ -480,8 +488,9 @@ class AppController:
         if self._cnn_timeout_event:
             self._cnn_timeout_event.cancel()
             self._cnn_timeout_event = None
+        self.dm.resume_heartbeat()              # resume on success
 
-        food_type      = result.get('food_type', '').strip().lower()
+        food_type       = result.get('food_type', '').strip().lower()
         no_match_values = {'no_match', 'no match', 'unknown', 'none', '', 'not food'}
 
         if food_type in no_match_values:
