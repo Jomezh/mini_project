@@ -1,5 +1,5 @@
 from kivy.clock import Clock
-from threading import Thread
+from threading import Thread, Event
 import time
 import os
 
@@ -18,6 +18,7 @@ class AppController:
         self.ble_timeout_event     = None
         self.current_test_data     = {}
         self.current_connected_mac = None
+        self._wifi_cancel          = Event()    # ← signals retry loops to stop
 
     def on_app_start(self):
         Thread(target=self.dm.hardware.initialize, daemon=True).start()
@@ -28,6 +29,10 @@ class AppController:
             self.priming_check_event.cancel()
         if self.ble_timeout_event:
             self.ble_timeout_event.cancel()
+
+    def cancel_wifi_connect(self):
+        """Instantly unblocks any running WiFi retry sleep."""
+        self._wifi_cancel.set()
 
     # ── Navigation ────────────────────────────────────────────────────────
 
@@ -102,9 +107,14 @@ class AppController:
         blemac = known_device['ble_mac']
         name   = known_device['ble_name']
 
-        for attempt in range(1, WIFI_RETRY_LIMIT + 1):
-            print(f"[CONTROLLER] WiFi attempt {attempt}/{WIFI_RETRY_LIMIT} for {ssid}")
+        self._wifi_cancel.clear()               # reset before loop starts
 
+        for attempt in range(1, WIFI_RETRY_LIMIT + 1):
+            if self._wifi_cancel.is_set():
+                print("[CONTROLLER] Auto-connect cancelled")
+                return
+
+            print(f"[CONTROLLER] WiFi attempt {attempt}/{WIFI_RETRY_LIMIT} for {ssid}")
             self.dm.network.notify_enable_hotspot()
 
             wait         = WIFI_FIRST_HOTSPOT_WAIT if attempt == 1 else WIFI_RETRY_INTERVAL
@@ -118,7 +128,14 @@ class AppController:
                     ), 0
             )
 
-            time.sleep(wait)
+            # Interruptible — wakes instantly if cancel_wifi_connect() is called
+            cancelled = self._wifi_cancel.wait(timeout=wait)
+            if cancelled:
+                print("[CONTROLLER] Auto-connect cancelled during wait")
+                return
+
+            if self._wifi_cancel.is_set():
+                return
 
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_connecting(name), 0
@@ -157,6 +174,7 @@ class AppController:
     # ── New BLE pairing flow ──────────────────────────────────────────────
 
     def start_pairing(self):
+        self.cancel_wifi_connect()              # stop any running retry loop instantly
         screen = self.sm.get_screen('pairing')
         screen.show_waiting_ble()
         success = self.dm.network.start_ble_advertising()
@@ -219,9 +237,14 @@ class AppController:
         blemac   = credentials.get('ble_mac', '')
         name     = credentials.get('ble_name', 'your phone')
 
-        for attempt in range(1, WIFI_RETRY_LIMIT + 1):
-            print(f"[CONTROLLER] New pair WiFi attempt {attempt}/{WIFI_RETRY_LIMIT}")
+        self._wifi_cancel.clear()               # reset before loop starts
 
+        for attempt in range(1, WIFI_RETRY_LIMIT + 1):
+            if self._wifi_cancel.is_set():
+                print("[CONTROLLER] New pair cancelled")
+                return
+
+            print(f"[CONTROLLER] New pair WiFi attempt {attempt}/{WIFI_RETRY_LIMIT}")
             self.dm.network.notify_enable_hotspot()
 
             wait         = WIFI_FIRST_HOTSPOT_WAIT if attempt == 1 else WIFI_RETRY_INTERVAL
@@ -235,7 +258,14 @@ class AppController:
                     ), 0
             )
 
-            time.sleep(wait)
+            # Interruptible — wakes instantly if cancel_wifi_connect() is called
+            cancelled = self._wifi_cancel.wait(timeout=wait)
+            if cancelled:
+                print("[CONTROLLER] New pair cancelled during wait")
+                return
+
+            if self._wifi_cancel.is_set():
+                return
 
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_connecting(name), 0
@@ -275,12 +305,13 @@ class AppController:
     # ── Device management ─────────────────────────────────────────────────
 
     def reset_pairing(self):
+        self.cancel_wifi_connect()              # stop any retry loop before clearing
         self.dm.reset_pairing()
         self.current_connected_mac = None
         self.sm.get_screen('pairing').show_qr()
         Clock.schedule_once(
-        lambda dt: self.sm.get_screen('pairing').show_qr(), 0.1
-       )                
+            lambda dt: self.sm.get_screen('pairing').show_qr(), 0.1
+        )
         print("[CONTROLLER] All pairing data cleared")
 
     def forget_device(self):
@@ -305,11 +336,8 @@ class AppController:
 
     def on_phone_disconnected(self):
         """
-        FIX: Heartbeat/disconnect callback — goes back to pairing WITHOUT
-        deleting the saved device. Phone can reconnect without re-pairing.
-        Previously the heartbeat was calling forget_device() which deleted
-        the device, causing the Pi to lose the saved profile and loop forever.
-        Your heartbeat manager should call this instead of forget_device().
+        Heartbeat/disconnect callback — returns to pairing WITHOUT deleting
+        the saved device. Phone can reconnect without re-pairing.
         """
         name = 'phone'
         if self.current_connected_mac:
@@ -321,12 +349,12 @@ class AppController:
                 name = match['ble_name']
 
         print(f"[CONTROLLER] Phone disconnected ({name}) — returning to pairing, device kept")
-        self.dm.network.stop()              # stop Flask server cleanly
+        self.dm.network.stop()
         self.current_connected_mac = None
         self.sm.current = 'pairing'
         Clock.schedule_once(lambda dt: self.start_pairing_screen(), 0.3)
 
-    # ── Test / sensor flow ───────────────────────────────────────────────
+    # ── Test / sensor flow ────────────────────────────────────────────────
 
     def start_test(self):
         if not self.dm.hardware.are_voc_sensors_ready():

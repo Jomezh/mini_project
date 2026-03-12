@@ -10,18 +10,18 @@ from kivy.core.image import Image as CoreImage
 from kivy.clock import Clock
 
 
-GATT_SERVICE_UUID = '12345678-1234-1234-1234-123456789ab0'  # Must match ble_manager.py
+GATT_SERVICE_UUID = '12345678-1234-1234-1234-123456789ab0'
 
 
 class PairingScreen(Screen):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.controller          = None
-        self.retry_timer         = None
-        self.retry_countdown     = 0
-        self.action_btn_mode     = 'scan'  # scan | cancel | retry
-        self.hotspot_device      = ''
+        self.controller           = None
+        self.retry_timer          = None
+        self.retry_countdown      = 0
+        self.action_btn_mode      = 'scan'
+        self.hotspot_device       = ''
         self.hotspot_retries_left = 0
         self.build_ui()
 
@@ -72,23 +72,24 @@ class PairingScreen(Screen):
         btn_row.add_widget(self.pair_btn)
         btn_row.add_widget(self.shutdown_btn)
 
+        # ── Reset button — always present, never disabled ─────────────────
+        self.reset_btn = Button(
+            text='Reset All Pairings',
+            background_color=(0.3, 0.1, 0.1, 1),
+            font_size='9sp', size_hint=(1, 0.20),
+            disabled=False,
+        )
+        self.reset_btn.bind(
+            on_press=lambda x: self.controller.reset_pairing() if self.controller else None
+        )
+
         root.add_widget(self.title_label)
         root.add_widget(self.status_label)
         root.add_widget(self.qr_image)
         root.add_widget(self.device_id_label)
         root.add_widget(self.action_btn)
         root.add_widget(btn_row)
-
-        if config.SHOW_RESET_BUTTON:
-            self.reset_btn = Button(
-                text='Reset All Pairings',
-                background_color=(0.3, 0.1, 0.1, 1),
-                font_size='9sp', size_hint=(1, 0.20)
-            )
-            self.reset_btn.bind(
-                on_press=lambda x: self.controller.reset_pairing() if self.controller else None
-            )
-            root.add_widget(self.reset_btn)
+        root.add_widget(self.reset_btn)          # always added, no config guard
 
         self.add_widget(root)
 
@@ -121,7 +122,7 @@ class PairingScreen(Screen):
     # ── QR generation ─────────────────────────────────────────────────────
 
     def generate_qr(self, device_id: str):
-        ble_name = f'MiniK-{device_id[-6:]}'  # FIX: was [:6] → 'MiniK-MINIK-'
+        ble_name = f'MiniK-{device_id[-6:]}'
         qr_data  = (
             f'minik:pair'
             f'?device={device_id}'
@@ -146,7 +147,7 @@ class PairingScreen(Screen):
     # ── State methods (called by app_controller.py) ───────────────────────
 
     def show_qr(self, message: str = None):
-        """Idle state: QR visible, both buttons active."""
+        """Idle state: QR visible, all buttons active."""
         self.stop_all_timers()
         self.status_label.text   = message or 'Open MiniK app on your phone & scan this QR code to pair'
         self.status_label.color  = (0.85, 0.85, 0.85, 1)
@@ -166,7 +167,8 @@ class PairingScreen(Screen):
         self.status_label.text   = 'Scanning for your phone...'
         self.status_label.color  = (0.5, 0.8, 1.0, 1)
         self.qr_image.opacity    = 0
-        self.pair_btn.disabled   = True
+        self.pair_btn.text       = 'Connect New'
+        self.pair_btn.disabled   = False         # user can bail at any time
         self.action_btn_mode     = 'cancel'
         self.action_btn.text     = 'Cancel'
         self.action_btn.background_color = (0.5, 0.15, 0.15, 1)
@@ -178,7 +180,8 @@ class PairingScreen(Screen):
         self.status_label.text   = f'Found {device_name}\nConnecting to hotspot...'
         self.status_label.color  = (0.3, 0.9, 0.3, 1)
         self.qr_image.opacity    = 0
-        self.pair_btn.disabled   = True
+        self.pair_btn.text       = 'Connect New ✕'  # label hints it will cancel
+        self.pair_btn.disabled   = False             # user can bail at any time
         self.action_btn.text     = 'Connecting...'
         self.action_btn.background_color = (0.3, 0.3, 0.3, 1)
         self.action_btn.disabled = True
@@ -189,7 +192,8 @@ class PairingScreen(Screen):
         self.status_label.text   = 'Waiting for phone to connect...\nScan QR code with MiniK app'
         self.status_label.color  = (0.5, 0.8, 1.0, 1)
         self.qr_image.opacity    = 1
-        self.pair_btn.disabled   = True
+        self.pair_btn.text       = 'Connect New'
+        self.pair_btn.disabled   = False
         self.action_btn_mode     = 'cancel'
         self.action_btn.text     = 'Cancel'
         self.action_btn.background_color = (0.5, 0.15, 0.15, 1)
@@ -198,7 +202,7 @@ class PairingScreen(Screen):
             self.generate_qr(self.controller.dm.get_device_id())
 
     def show_hotspot_prompt(self, device_name: str, attempt: int,
-                             retries_left: int, retry_in: int):
+                            retries_left: int, retry_in: int):
         """WiFi failed — hotspot is off. Show countdown + Retry Now button."""
         self.stop_all_timers()
         self.retry_countdown      = retry_in
@@ -206,6 +210,7 @@ class PairingScreen(Screen):
         self.hotspot_retries_left = retries_left
         self.status_label.color   = (1.0, 0.65, 0.15, 1)
         self.qr_image.opacity     = 0
+        self.pair_btn.text        = 'Connect New ✕'
         self.pair_btn.disabled    = False
         self.action_btn_mode      = 'retry'
         self.action_btn.background_color = (0.55, 0.35, 0.05, 1)
@@ -217,6 +222,7 @@ class PairingScreen(Screen):
         self.stop_all_timers()
         self.status_label.text   = message
         self.status_label.color  = (1.0, 0.3, 0.3, 1)
+        self.pair_btn.text       = 'Connect New'
         self.pair_btn.disabled   = False
         self.action_btn.disabled = False
 
@@ -226,11 +232,11 @@ class PairingScreen(Screen):
         self.retry_countdown -= 1
         if self.retry_countdown <= 0:
             self.stop_all_timers()
-            self.status_label.text  = f'Connecting to {self.hotspot_device}...'
-            self.status_label.color = (0.3, 0.9, 0.3, 1)
-            self.action_btn.text    = 'Connecting...'
+            self.status_label.text   = f'Connecting to {self.hotspot_device}...'
+            self.status_label.color  = (0.3, 0.9, 0.3, 1)
+            self.action_btn.text     = 'Connecting...'
             self.action_btn.disabled = True
-            return False  # stops Clock.schedule_interval cleanly
+            return False
         self.update_hotspot_label()
 
     def update_hotspot_label(self):
