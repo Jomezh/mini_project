@@ -4,12 +4,14 @@ import time
 import threading
 import os
 
+
 try:
     import netifaces
     HAS_NETIFACES = True
 except ImportError:
     HAS_NETIFACES = False
     print("[WIFI] netifaces not installed — pip install netifaces")
+
 
 try:
     import requests as reqlib
@@ -30,10 +32,10 @@ class WiFiManager:
     PHONE_PORT = 8080
 
     def __init__(self):
-        self.phone_ip     = None
-        self.server_ready = threading.Event()
-        self.results      = {}
-        self.results_lock = threading.Lock()
+        self.phone_ip      = None
+        self.server_ready  = threading.Event()
+        self.results       = {}
+        self.results_lock  = threading.Lock()
         self.result_events = {
             'cnn_result': threading.Event(),
             'ml_result':  threading.Event(),
@@ -185,10 +187,22 @@ class WiFiManager:
 
         app = Flask(__name__)
 
+        # ── Health / discovery routes ─────────────────────────────────────
+        # Phone polls these before sending data to confirm Pi Flask is alive.
+
         @app.route('/ping', methods=['GET'])
         def ping():
-            print("[WIFI SERVER] Ping received from phone ✓")
-            return jsonify(status='ok', device='minik')
+            return jsonify(status='ok', device='minik'), 200
+
+        @app.route('/status', methods=['GET'])           # ← ADDED
+        def status():
+            return jsonify(status='ok', device='minik'), 200
+
+        @app.route('/snapshot', methods=['GET'])         # ← ADDED
+        def snapshot():
+            return jsonify(status='ok'), 200
+
+        # ── Result ingestion ──────────────────────────────────────────────
 
         @app.route('/result/<result_type>', methods=['POST'])
         def receive_result(result_type):
@@ -198,7 +212,7 @@ class WiFiManager:
                 self.results[result_type] = data
             if result_type in self.result_events:
                 self.result_events[result_type].set()
-            return jsonify(status='received')
+            return jsonify(status='received'), 200
 
         try:
             server = make_server('0.0.0.0', self.FLASK_PORT, app)
@@ -280,7 +294,6 @@ class WiFiManager:
         """
         Cancellable wait for CNN result from phone.
         Polls in 1s slices so cancel_event is checked promptly.
-        cancel_event: threading.Event — set it to unblock immediately.
         """
         print(f"[WIFI] Waiting for cnn_result (timeout {timeout}s)...")
         event = self.result_events.get('cnn_result')
@@ -334,10 +347,7 @@ class WiFiManager:
         return None
 
     def wait_for_message(self, message_type: str, timeout: int = 120):
-        """
-        Generic wait — kept for any other callers.
-        For cnn_result and ml_result prefer the typed methods above.
-        """
+        """Generic wait — kept for any other callers."""
         print(f"[WIFI] Waiting for '{message_type}' from phone (timeout: {timeout}s)...")
         event = self.result_events.get(message_type)
         if not event:
