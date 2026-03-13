@@ -2,6 +2,7 @@ import subprocess
 import socket
 import time
 import threading
+import socketserver
 import os
 
 
@@ -185,11 +186,12 @@ class WiFiManager:
         from flask import Flask, request, jsonify
         from werkzeug.serving import BaseWSGIServer
 
-        # SO_REUSEADDR must be set BEFORE bind().
-        # Subclassing is the only clean way with Werkzeug
-        # since make_server() calls bind() immediately in its constructor.
-        class _ReusableServer(BaseWSGIServer):
+        # ThreadingMixIn  → each request gets its own thread (concurrent safe)
+        # allow_reuse_address → SO_REUSEADDR applied before bind()
+        # daemon_threads  → request threads die with the main process
+        class _Server(socketserver.ThreadingMixIn, BaseWSGIServer):
             allow_reuse_address = True
+            daemon_threads      = True
 
         app = Flask(__name__)
 
@@ -220,9 +222,7 @@ class WiFiManager:
             return jsonify(status='received'), 200
 
         try:
-            server = _ReusableServer(
-                '0.0.0.0', self.FLASK_PORT, app, threaded=True
-            )
+            server = _Server('0.0.0.0', self.FLASK_PORT, app)
             self._flask_server = server
             self.server_ready.set()
             print(f"[WIFI SERVER] Listening on 0.0.0.0:{self.FLASK_PORT}")
@@ -241,7 +241,7 @@ class WiFiManager:
         url = self._build_phone_url('ping')
         if not url:
             return False
-        print(f"[WIFI] Waiting for phone server on {url} (up to {timeout}s)...")
+        print(f"[WIFI] Waiting for phone server (up to {timeout}s)...")
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
