@@ -149,9 +149,10 @@ class AppController:
             if wifiok:
                 self.current_connected_mac = blemac
                 self.dm.update_last_connected(blemac)
+                # Start Flask first — phone may already be polling
                 self.dm.network.start_wifi_server()
                 self.dm.start_heartbeat_after_wifi(
-                    on_disconnected=self.on_phone_disconnected   # ← wired
+                    on_disconnected=self.on_phone_disconnected
                 )
                 print("[CONTROLLER] Auto-connect success → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
@@ -280,14 +281,18 @@ class AppController:
             if wifiok:
                 self.current_connected_mac = blemac
                 self.dm.update_last_connected(blemac)
+
+                # FIX: Start Flask FIRST — phone gets IP and connects immediately
+                self.dm.network.start_wifi_server()
+
                 pi_ip = self.dm.network.get_local_ip()
                 if pi_ip:
                     self.dm.network.send_ip_to_phone(pi_ip)
-                    time.sleep(1)
+                    time.sleep(1)               # let BLE notify settle
+
                 self.dm.network.stop_ble()
-                self.dm.network.start_wifi_server()
                 self.dm.start_heartbeat_after_wifi(
-                    on_disconnected=self.on_phone_disconnected   # ← wired
+                    on_disconnected=self.on_phone_disconnected
                 )
                 print("[CONTROLLER] New pair complete → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
@@ -332,6 +337,11 @@ class AppController:
             )
             name = match['ble_name'] if match else self.current_connected_mac
             self.dm.remove_device(self.current_connected_mac)
+            # FIX: stop heartbeat and Flask so they don't fire after device is gone
+            if self.dm.heartbeat:
+                self.dm.heartbeat.stop()
+                self.dm.heartbeat = None
+            self.dm.network.stop()
             self.current_connected_mac = None
             print(f"[CONTROLLER] Forgot device: {name}")
         else:
