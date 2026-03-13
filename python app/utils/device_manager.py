@@ -324,28 +324,30 @@ class NetworkManager:
         if hasattr(self.wifi, 'start_server'):
             self.wifi.start_server()
 
+    def stop(self):
+        """Stop WiFi server only — used on phone disconnect to free Flask port."""
+        if hasattr(self.wifi, 'stop'):
+            self.wifi.stop()
+        self.mode = 'ble'                       # reset mode for next connection
+
     def send_image_to_phone(self, path):
         return self.wifi.send_image(path) if self.mode == 'wifi' else False
 
     def wait_for_cnn_result(self, cancel_event=None):
-        """Cancellable — pass threading.Event to unblock early."""
         if self.mode != 'wifi':
             return None
         if hasattr(self.wifi, 'wait_for_cnn_result'):
             return self.wifi.wait_for_cnn_result(cancel_event=cancel_event)
-        # fallback for mock
         return self.wifi.wait_for_message('cnn_result')
 
     def send_csv_to_phone(self, path):
         return self.wifi.send_file(path) if self.mode == 'wifi' else False
 
     def wait_for_ml_result(self, cancel_event=None):
-        """Cancellable — pass threading.Event to unblock early."""
         if self.mode != 'wifi':
             return None
         if hasattr(self.wifi, 'wait_for_ml_result'):
             return self.wifi.wait_for_ml_result(cancel_event=cancel_event)
-        # fallback for mock
         return self.wifi.wait_for_message('ml_result')
 
     def cleanup(self):
