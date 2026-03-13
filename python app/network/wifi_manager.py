@@ -74,8 +74,24 @@ class WiFiManager:
                 print(f"[WIFI] '{ssid}' confirmed visible in scan ✓")
 
             if password:
+                # Delete any stale saved profile for this SSID before connecting.
+                # An old profile (wrong/empty password) causes nmcli to silently
+                # prefer it over fresh credentials — this is the root cause of
+                # first-try connection failures.
+                if self._profile_exists(ssid):
+                    print(f"[WIFI] Deleting stale profile for '{ssid}' before reconnect...")
+                    del_result = subprocess.run(
+                        ['nmcli', 'con', 'delete', ssid],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    if del_result.returncode == 0:
+                        print(f"[WIFI] Stale profile deleted ✓")
+                    else:
+                        print(f"[WIFI] Profile delete warning: {del_result.stderr.strip()}")
+
                 cmd = ['nmcli', 'dev', 'wifi', 'connect', ssid, 'password', password]
                 print(f"[WIFI] Connecting to '{ssid}' with password")
+
             elif self._profile_exists(ssid):
                 cmd = ['nmcli', 'con', 'up', ssid]
                 print(f"[WIFI] Bringing up saved profile for '{ssid}'")
