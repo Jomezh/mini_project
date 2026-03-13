@@ -47,8 +47,6 @@ _UUID_TO_KEY = {
 }
 _REQUIRED_CREDS = {'ssid', 'password', 'ble_name', 'ble_mac'}
 
-# Pi Zero 2W / CYW43439: wait for BlueZ to fully register GATT after start()
-# Without this, phone's discoverServices() returns empty → drops connection
 _GATT_READY_DELAY = 1.0
 
 
@@ -74,13 +72,13 @@ class BLEManager:
         self._connected_clients = set()
         self._connection_lock   = threading.Lock()
 
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def start_advertising(self):
         return self.start_ble_advertising()
 
     def start_ble_advertising(self) -> bool:
-        """Start GATT server and begin BLE advertising."""
         try:
             self._loop = asyncio.new_event_loop()
             self._bg_thread = threading.Thread(
@@ -105,10 +103,6 @@ class BLEManager:
             return False
 
     def wait_for_pairing(self, timeout: int = 180) -> dict | None:
-        """
-        Block until phone writes all 4 GATT characteristics.
-        Returns credentials dict or None on timeout.
-        """
         print("[BLE] Waiting for phone to send credentials...")
         self._creds_received.clear()
         self._creds.clear()
@@ -125,7 +119,6 @@ class BLEManager:
         return None
 
     def send_ip_to_phone(self, ip_address: str) -> bool:
-        """Pi's WiFi IP → written to GATT characteristic → phone reads it."""
         try:
             self._outgoing['ip'] = ip_address
             if self._server and self._loop:
@@ -140,10 +133,6 @@ class BLEManager:
             return False
 
     def notify_enable_hotspot(self) -> bool:
-        """
-        Write 'enable_hotspot' to STATUS characteristic.
-        Phone receives BLE notify → shows 'Enable your hotspot' alert.
-        """
         try:
             self._outgoing['status'] = 'enable_hotspot'
             if self._server and self._loop:
@@ -168,7 +157,6 @@ class BLEManager:
             return len(self._connected_clients)
 
     def stop(self):
-        """Stop GATT server and event loop cleanly."""
         if self._server and self._loop and self._loop.is_running():
             future = asyncio.run_coroutine_threadsafe(
                 self._stop_server(), self._loop
@@ -194,11 +182,6 @@ class BLEManager:
                          known_macs: list,
                          known_names: list,
                          timeout: int = 10) -> dict | None:
-        """
-        Central role — scan for known phone MACs/names.
-        Runs a fresh event loop separate from GATT server loop.
-        Returns {'mac': ..., 'name': ...} or None.
-        """
         print(f"[BLE] Scanning {timeout}s for "
               f"{len(known_macs)} known device(s)...")
         try:
@@ -212,11 +195,13 @@ class BLEManager:
             print(f"[BLE] Scan error: {e}")
             return None
 
+
     # ── Event Loop ────────────────────────────────────────────────────────────
 
     def _run_event_loop(self):
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
+
 
     # ── GATT Server Setup ─────────────────────────────────────────────────────
 
@@ -265,6 +250,7 @@ class BLEManager:
               f"{len(_READABLE_CHARS)} readable characteristics registered")
         print(f"[BLE] Monitor: sudo btmon | grep -E 'Connect|Address'")
 
+
     # ── Connection Tracking ───────────────────────────────────────────────────
 
     def _on_client_connect(self, client_mac: str):
@@ -278,6 +264,7 @@ class BLEManager:
             self._connected_clients.discard(client_mac)
         print(f"[BLE] ✗ Phone disconnected: {client_mac}  "
               f"(remaining: {len(self._connected_clients)})")
+
 
     # ── GATT Callbacks ────────────────────────────────────────────────────────
 
@@ -337,6 +324,7 @@ class BLEManager:
         except Exception as e:
             print(f"[BLE] Notify error ({char_uuid[-4:]}): {e}")
 
+
     # ── BLE Scan ──────────────────────────────────────────────────────────────
 
     async def _scan_async(self,
@@ -358,11 +346,9 @@ class BLEManager:
             mac  = (device.address or '').upper()
             name = (device.name    or '').strip()
 
-            # bleak ≥0.20: name comes from advertisement_data.local_name
             if not name and advertisement_data:
                 name = (getattr(advertisement_data, 'local_name', '') or '').strip()
 
-            # Motorola/iQOO embed name in ServiceData UUID 00000720
             if not name and advertisement_data:
                 svc_data = getattr(advertisement_data, 'service_data', {}) or {}
                 for uuid_key, raw_bytes in svc_data.items():
@@ -397,10 +383,9 @@ class BLEManager:
                 break
 
         await scanner.stop()
-        count = len(await BleakScanner.discover(timeout=0.1))
 
         if found_device:
             return found_device
 
-        print(f"[BLE] Scan complete — no known devices found")
+        print("[BLE] Scan complete — no known devices found")
         return None

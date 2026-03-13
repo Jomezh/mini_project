@@ -26,6 +26,7 @@ class DeviceManager:
         self.cleanup_manager = CleanupManager(base_dir)
         self.cleanup_manager.start()
 
+
     # ── Device ID ─────────────────────────────────────────────────────────
 
     def get_device_id(self):
@@ -60,6 +61,7 @@ class DeviceManager:
         )
         with open(self.CONFIG_FILE, 'w') as f:
             json.dump(data, f, indent=2)
+
 
     # ── Known Devices ─────────────────────────────────────────────────────
 
@@ -103,6 +105,7 @@ class DeviceManager:
         self._write_config(self.config_data)
 
     def reset_pairing(self):
+        """Wipe ALL known devices and stop heartbeat. Use for full factory reset only."""
         if self.heartbeat:
             self.heartbeat.stop()
             self.heartbeat = None
@@ -110,10 +113,8 @@ class DeviceManager:
         self._write_config(self.config_data)
         print("[DEVICE] All pairing data cleared")
 
-    def forget_device(self):
-        self.reset_pairing()
-
     def remove_device(self, ble_mac):
+        """Remove a single device by MAC. Heartbeat/network cleanup is caller's responsibility."""
         known = [
             d for d in self.get_known_devices()
             if d.get('ble_mac') != ble_mac
@@ -121,6 +122,7 @@ class DeviceManager:
         self.config_data['known_devices'] = known
         self._write_config(self.config_data)
         print(f"[DEVICE] Removed device: {ble_mac}")
+
 
     # ── Boot Scan ─────────────────────────────────────────────────────────
 
@@ -148,14 +150,10 @@ class DeviceManager:
         print("[DEVICE] No known devices found nearby")
         return None
 
+
     # ── Heartbeat ─────────────────────────────────────────────────────────
 
     def start_heartbeat_after_wifi(self, on_disconnected=None):
-        """
-        Called from app_controller after WiFi is confirmed connected.
-        on_disconnected: callable — fired when phone goes offline.
-        Pass controller.on_phone_disconnected so navigation is handled.
-        """
         if not config.USE_REAL_NETWORK:
             return
         phone_ip = self.network.wifi.get_phone_ip()
@@ -169,6 +167,7 @@ class DeviceManager:
         from network.heartbeat_manager import HeartbeatManager
         if self.heartbeat:
             self.heartbeat.stop()
+            self.heartbeat = None
         self.heartbeat = HeartbeatManager(
             phone_address=phone_address,
             on_connected=lambda: print("[DEVICE] Phone app ONLINE ✓"),
@@ -179,14 +178,13 @@ class DeviceManager:
         self.heartbeat.start()
 
     def pause_heartbeat(self):
-        """Suppress disconnect callbacks during long operations (image send, CNN wait)."""
         if self.heartbeat:
             self.heartbeat.pause()
 
     def resume_heartbeat(self):
-        """Re-enable disconnect callbacks after long operation completes."""
         if self.heartbeat:
             self.heartbeat.resume()
+
 
     # ── Cleanup / Shutdown ────────────────────────────────────────────────
 
@@ -208,6 +206,7 @@ class DeviceManager:
 
 
 # ── HardwareManager ───────────────────────────────────────────────────────────
+
 
 class HardwareManager:
 
@@ -260,6 +259,7 @@ class HardwareManager:
 
 # ── NetworkManager ────────────────────────────────────────────────────────────
 
+
 class NetworkManager:
 
     def __init__(self, device_id):
@@ -294,8 +294,8 @@ class NetworkManager:
             return self.ble.scan_for_devices(known_macs, known_names, timeout)
         return None
 
-    def wait_for_pairing(self):         return self.ble.wait_for_pairing()
-    def stop_ble(self):                 return self.ble.stop()
+    def wait_for_pairing(self):     return self.ble.wait_for_pairing()
+    def stop_ble(self):             return self.ble.stop()
 
     def connect_wifi(self, ssid, password=None):
         ok = self.wifi.connect(ssid, password)
@@ -308,16 +308,21 @@ class NetworkManager:
             return self.wifi.get_local_ip()
         return None
 
+    def is_connected_to(self, ssid: str) -> bool:
+        """Proxy to wifi_manager.is_connected_to — used by heartbeat guard."""
+        if hasattr(self.wifi, 'is_connected_to'):
+            return self.wifi.is_connected_to(ssid)
+        return False
+
     def send_ip_to_phone(self, ip):
         if hasattr(self.ble, 'send_ip_to_phone'):
             return self.ble.send_ip_to_phone(ip)
         return False
 
     def notify_enable_hotspot(self):
+        # Always call on ble only — prevents double-fire on mock where ble == wifi
         if hasattr(self.ble, 'notify_enable_hotspot'):
             return self.ble.notify_enable_hotspot()
-        if hasattr(self.wifi, 'notify_enable_hotspot'):
-            return self.wifi.notify_enable_hotspot()
         return False
 
     def start_wifi_server(self):
@@ -325,10 +330,10 @@ class NetworkManager:
             self.wifi.start_server()
 
     def stop(self):
-        """Stop WiFi server only — used on phone disconnect to free Flask port."""
+        """Stop WiFi server only — BLE was already stopped after pair."""
         if hasattr(self.wifi, 'stop'):
             self.wifi.stop()
-        self.mode = 'ble'                       # reset mode for next connection
+        self.mode = 'ble'
 
     def send_image_to_phone(self, path):
         return self.wifi.send_image(path) if self.mode == 'wifi' else False
