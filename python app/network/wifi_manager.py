@@ -183,22 +183,27 @@ class WiFiManager:
 
     def _run_flask(self):
         from flask import Flask, request, jsonify
-        from werkzeug.serving import make_server
+        from werkzeug.serving import BaseWSGIServer
+
+        # SO_REUSEADDR must be set BEFORE bind().
+        # Subclassing is the only clean way with Werkzeug
+        # since make_server() calls bind() immediately in its constructor.
+        class _ReusableServer(BaseWSGIServer):
+            allow_reuse_address = True
 
         app = Flask(__name__)
 
-        # ── Health / discovery routes ─────────────────────────────────────
-        # Phone polls these before sending data to confirm Pi Flask is alive.
+        # ── Health / discovery ────────────────────────────────────────────
 
         @app.route('/ping', methods=['GET'])
         def ping():
             return jsonify(status='ok', device='minik'), 200
 
-        @app.route('/status', methods=['GET'])           # ← ADDED
+        @app.route('/status', methods=['GET'])
         def status():
             return jsonify(status='ok', device='minik'), 200
 
-        @app.route('/snapshot', methods=['GET'])         # ← ADDED
+        @app.route('/snapshot', methods=['GET'])
         def snapshot():
             return jsonify(status='ok'), 200
 
@@ -215,21 +220,40 @@ class WiFiManager:
             return jsonify(status='received'), 200
 
         try:
-            server = make_server('0.0.0.0', self.FLASK_PORT, app)
-            server.socket.setsockopt(
-                __import__('socket').SOL_SOCKET,
-                __import__('socket').SO_REUSEADDR,
-                1
+            server = _ReusableServer(
+                '0.0.0.0', self.FLASK_PORT, app, threaded=True
             )
             self._flask_server = server
             self.server_ready.set()
             print(f"[WIFI SERVER] Listening on 0.0.0.0:{self.FLASK_PORT}")
-            self._flask_server.serve_forever()
+            server.serve_forever()
         except OSError as e:
             print(f"[WIFI SERVER] Failed to bind port {self.FLASK_PORT}: {e}")
             print(f"[WIFI SERVER] Try: sudo fuser -k {self.FLASK_PORT}/tcp")
 
     # ── Send to phone ─────────────────────────────────────────────────────
+
+    def _wait_for_phone_server(self, timeout: int = 15) -> bool:
+        """
+        Polls phone's HTTP server until it responds.
+        Called before send_image() to avoid wasting the first attempt.
+        """
+        url = self._build_phone_url('ping')
+        if not url:
+            return False
+        print(f"[WIFI] Waiting for phone server on {url} (up to {timeout}s)...")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                resp = reqlib.get(url, timeout=3)
+                if resp.status_code == 200:
+                    print("[WIFI] Phone server ready ✓")
+                    return True
+            except Exception:
+                pass
+            time.sleep(1)
+        print("[WIFI] Phone server did not become ready in time")
+        return False
 
     def send_image(self, image_path: str) -> bool:
         if not HAS_REQUESTS:
@@ -238,6 +262,12 @@ class WiFiManager:
         url = self._build_phone_url('upload/image')
         if not url:
             return False
+
+        # Wait for phone's HTTP server to be reachable before first attempt
+        if not self._wait_for_phone_server(timeout=15):
+            print("[WIFI] Aborting image send — phone server unreachable")
+            return False
+
         for attempt in range(1, 4):
             try:
                 print(f"[WIFI] Sending image to phone (attempt {attempt}/3)...")
@@ -379,7 +409,7 @@ class WiFiManager:
     def stop(self):
         """
         Shut down Flask server cleanly.
-        Called before every start_server() to prevent port reuse errors.
+        Joins the old thread so the port is fully released before next bind.
         """
         if self._flask_server:
             print("[WIFI] Shutting down Flask server...")
@@ -389,5 +419,13 @@ class WiFiManager:
                 print(f"[WIFI] Flask shutdown warning (non-fatal): {e}")
             self._flask_server = None
             print("[WIFI] Flask server stopped ✓")
+
+        # Join old thread — ensures OS releases the port before next bind
+        if self.flask_thread and self.flask_thread.is_alive():
+            self.flask_thread.join(timeout=3)
+            if self.flask_thread.is_alive():
+                print("[WIFI] WARNING: Flask thread did not exit within 3s — port may briefly linger")
+        self.flask_thread = None
+
         # Reset phone IP so stale gateway from previous session isn't reused
         self.phone_ip = None
