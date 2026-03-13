@@ -19,16 +19,10 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
-    print("[WIFI] requests not installed — pip install requests")
+    print("[WIFI] requests not available — pip install requests")
 
 
 class WiFiManager:
-    """
-    Connects to phone's WiFi hotspot via nmcli.
-    Runs Flask server for receiving CNN/ML results from phone.
-    Sends images and CSVs to phone via HTTP.
-    """
-
     FLASK_PORT = 8765
     PHONE_PORT = 8080
 
@@ -61,7 +55,16 @@ class WiFiManager:
 
     def _do_connect(self, ssid: str, password: str = None):
         try:
-            time.sleep(2)   # BLE ACK window
+            time.sleep(2)  # BLE ACK window
+
+            # ── KEY FIX: skip reconnect if already on this network ────────
+            # Without this, the Pi deletes + recreates the profile even when
+            # already connected, causing a ~30s outage right as the phone
+            # starts pinging port 8765 to verify connectivity.
+            if self.is_connected_to(ssid):
+                print(f"[WIFI] Already connected to '{ssid}' — skipping reconnect ✓")
+                return
+            # ─────────────────────────────────────────────────────────────
 
             print("[WIFI] Running blocking rescan (nmcli dev wifi list --rescan yes)...")
             scan_result = subprocess.run(
@@ -74,10 +77,6 @@ class WiFiManager:
                 print(f"[WIFI] '{ssid}' confirmed visible in scan ✓")
 
             if password:
-                # Delete any stale saved profile for this SSID before connecting.
-                # An old profile (wrong/empty password) causes nmcli to silently
-                # prefer it over fresh credentials — this is the root cause of
-                # first-try connection failures.
                 if self._profile_exists(ssid):
                     print(f"[WIFI] Deleting stale profile for '{ssid}' before reconnect...")
                     del_result = subprocess.run(
@@ -182,10 +181,6 @@ class WiFiManager:
     # ── Flask server ──────────────────────────────────────────────────────
 
     def start_server(self):
-        """
-        Start Flask server. Shuts down any previously running instance first
-        to prevent 'Address already in use' on reconnect.
-        """
         self.stop()
         self.server_ready.clear()
         self.flask_thread = threading.Thread(
@@ -202,16 +197,11 @@ class WiFiManager:
         from flask import Flask, request, jsonify
         from werkzeug.serving import BaseWSGIServer
 
-        # ThreadingMixIn  → each request gets its own thread (concurrent safe)
-        # allow_reuse_address → SO_REUSEADDR applied before bind()
-        # daemon_threads  → request threads die with the main process
         class _Server(socketserver.ThreadingMixIn, BaseWSGIServer):
             allow_reuse_address = True
             daemon_threads      = True
 
         app = Flask(__name__)
-
-        # ── Health / discovery ────────────────────────────────────────────
 
         @app.route('/ping', methods=['GET'])
         def ping():
@@ -224,8 +214,6 @@ class WiFiManager:
         @app.route('/snapshot', methods=['GET'])
         def snapshot():
             return jsonify(status='ok'), 200
-
-        # ── Result ingestion ──────────────────────────────────────────────
 
         @app.route('/result/<result_type>', methods=['POST'])
         def receive_result(result_type):
@@ -250,10 +238,6 @@ class WiFiManager:
     # ── Send to phone ─────────────────────────────────────────────────────
 
     def _wait_for_phone_server(self, timeout: int = 15) -> bool:
-        """
-        Polls phone's HTTP server until it responds.
-        Called before send_image() to avoid wasting the first attempt.
-        """
         url = self._build_phone_url('ping')
         if not url:
             return False
@@ -278,12 +262,9 @@ class WiFiManager:
         url = self._build_phone_url('upload/image')
         if not url:
             return False
-
-        # Wait for phone's HTTP server to be reachable before first attempt
         if not self._wait_for_phone_server(timeout=15):
             print("[WIFI] Aborting image send — phone server unreachable")
             return False
-
         for attempt in range(1, 4):
             try:
                 print(f"[WIFI] Sending image to phone (attempt {attempt}/3)...")
@@ -337,10 +318,6 @@ class WiFiManager:
     # ── Wait for results ──────────────────────────────────────────────────
 
     def wait_for_cnn_result(self, cancel_event=None, timeout: int = 120):
-        """
-        Cancellable wait for CNN result from phone.
-        Polls in 1s slices so cancel_event is checked promptly.
-        """
         print(f"[WIFI] Waiting for cnn_result (timeout {timeout}s)...")
         event = self.result_events.get('cnn_result')
         if not event:
@@ -348,7 +325,6 @@ class WiFiManager:
         event.clear()
         with self.results_lock:
             self.results.pop('cnn_result', None)
-
         deadline = time.time() + timeout
         while time.time() < deadline:
             remaining = min(1.0, deadline - time.time())
@@ -360,15 +336,10 @@ class WiFiManager:
             if cancel_event and cancel_event.is_set():
                 print("[WIFI] cnn_result wait cancelled by user")
                 return None
-
         print("[WIFI] Timeout waiting for cnn_result")
         return None
 
     def wait_for_ml_result(self, cancel_event=None, timeout: int = 120):
-        """
-        Cancellable wait for ML freshness result from phone.
-        Same 1s polling pattern as wait_for_cnn_result.
-        """
         print(f"[WIFI] Waiting for ml_result (timeout {timeout}s)...")
         event = self.result_events.get('ml_result')
         if not event:
@@ -376,7 +347,6 @@ class WiFiManager:
         event.clear()
         with self.results_lock:
             self.results.pop('ml_result', None)
-
         deadline = time.time() + timeout
         while time.time() < deadline:
             remaining = min(1.0, deadline - time.time())
@@ -388,12 +358,10 @@ class WiFiManager:
             if cancel_event and cancel_event.is_set():
                 print("[WIFI] ml_result wait cancelled by user")
                 return None
-
         print("[WIFI] Timeout waiting for ml_result")
         return None
 
     def wait_for_message(self, message_type: str, timeout: int = 120):
-        """Generic wait — kept for any other callers."""
         print(f"[WIFI] Waiting for '{message_type}' from phone (timeout: {timeout}s)...")
         event = self.result_events.get(message_type)
         if not event:
@@ -423,10 +391,6 @@ class WiFiManager:
         return url
 
     def stop(self):
-        """
-        Shut down Flask server cleanly.
-        Joins the old thread so the port is fully released before next bind.
-        """
         if self._flask_server:
             print("[WIFI] Shutting down Flask server...")
             try:
@@ -435,13 +399,9 @@ class WiFiManager:
                 print(f"[WIFI] Flask shutdown warning (non-fatal): {e}")
             self._flask_server = None
             print("[WIFI] Flask server stopped ✓")
-
-        # Join old thread — ensures OS releases the port before next bind
         if self.flask_thread and self.flask_thread.is_alive():
             self.flask_thread.join(timeout=3)
             if self.flask_thread.is_alive():
-                print("[WIFI] WARNING: Flask thread did not exit within 3s — port may briefly linger")
+                print("[WIFI] WARNING: Flask thread did not exit within 3s")
         self.flask_thread = None
-
-        # Reset phone IP so stale gateway from previous session isn't reused
         self.phone_ip = None
