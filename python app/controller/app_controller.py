@@ -21,6 +21,7 @@ class AppController:
         self._wifi_cancel          = Event()
         self._cnn_cancel           = Event()
         self._cnn_timeout_event    = None
+        self._pairing_in_progress  = False
 
     def on_app_start(self):
         Thread(target=self.dm.hardware.initialize, daemon=True).start()
@@ -112,6 +113,9 @@ class AppController:
 
         self._wifi_cancel.clear()
 
+        # Start Flask early — ready before phone ever gets the IP
+        self.dm.network.start_wifi_server()
+
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             if self._wifi_cancel.is_set():
                 print("[CONTROLLER] Auto-connect cancelled")
@@ -149,8 +153,7 @@ class AppController:
             if wifiok:
                 self.current_connected_mac = blemac
                 self.dm.update_last_connected(blemac)
-                # Start Flask first — phone may already be polling
-                self.dm.network.start_wifi_server()
+                # Flask already running since top of this method
                 self.dm.start_heartbeat_after_wifi(
                     on_disconnected=self.on_phone_disconnected
                 )
@@ -186,6 +189,8 @@ class AppController:
         if not success:
             screen.show_qr(message="Failed to start BLE - try again")
             return
+        # Start Flask now — ready long before phone gets the IP via BLE
+        self.dm.network.start_wifi_server()
         self.ble_timeout_event = Clock.schedule_once(
             lambda dt: self.on_ble_pairing_timeout(), 180
         )
@@ -215,6 +220,12 @@ class AppController:
     def on_paired(self, credentials):
         if self.ble_timeout_event:
             self.ble_timeout_event.cancel()
+            self.ble_timeout_event = None
+        # Guard against double-fire from ghost touch on pairing screen
+        if self._pairing_in_progress:
+            print("[CONTROLLER] on_paired called twice — ignoring duplicate")
+            return
+        self._pairing_in_progress = True
         self.dm.save_pairing(credentials)
         Thread(
             target=self.do_new_pair_wifi_connect,
@@ -229,6 +240,7 @@ class AppController:
             import traceback
             print(f"[CONTROLLER] !! New pair WiFi crash: {e}")
             traceback.print_exc()
+            self._pairing_in_progress = False
             err = str(e)
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_qr(
@@ -247,6 +259,7 @@ class AppController:
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             if self._wifi_cancel.is_set():
                 print("[CONTROLLER] New pair cancelled")
+                self._pairing_in_progress = False
                 return
 
             print(f"[CONTROLLER] New pair WiFi attempt {attempt}/{WIFI_RETRY_LIMIT}")
@@ -266,9 +279,11 @@ class AppController:
             cancelled = self._wifi_cancel.wait(timeout=wait)
             if cancelled:
                 print("[CONTROLLER] New pair cancelled during wait")
+                self._pairing_in_progress = False
                 return
 
             if self._wifi_cancel.is_set():
+                self._pairing_in_progress = False
                 return
 
             Clock.schedule_once(
@@ -281,23 +296,21 @@ class AppController:
             if wifiok:
                 self.current_connected_mac = blemac
                 self.dm.update_last_connected(blemac)
-
-                # FIX: Start Flask FIRST — phone gets IP and connects immediately
-                self.dm.network.start_wifi_server()
-
+                # Flask already running since start_pairing() — skip start_wifi_server()
                 pi_ip = self.dm.network.get_local_ip()
                 if pi_ip:
                     self.dm.network.send_ip_to_phone(pi_ip)
                     time.sleep(1)               # let BLE notify settle
-
                 self.dm.network.stop_ble()
                 self.dm.start_heartbeat_after_wifi(
                     on_disconnected=self.on_phone_disconnected
                 )
+                self._pairing_in_progress = False
                 print("[CONTROLLER] New pair complete → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
 
+        self._pairing_in_progress = False
         Clock.schedule_once(
             lambda dt: self.sm.get_screen('pairing').show_qr(
                 message="Please enable your phone's hotspot, scan again"
@@ -337,7 +350,7 @@ class AppController:
             )
             name = match['ble_name'] if match else self.current_connected_mac
             self.dm.remove_device(self.current_connected_mac)
-            # FIX: stop heartbeat and Flask so they don't fire after device is gone
+            # Stop heartbeat and Flask so they don't fire after device is gone
             if self.dm.heartbeat:
                 self.dm.heartbeat.stop()
                 self.dm.heartbeat = None
@@ -456,7 +469,7 @@ class AppController:
         if self._cnn_timeout_event:
             self._cnn_timeout_event.cancel()
             self._cnn_timeout_event = None
-        self.dm.resume_heartbeat()              # always resume on cancel
+        self.dm.resume_heartbeat()
         image_path = self.current_test_data.get('image_path')
         if image_path:
             self.delete_image(image_path)
@@ -470,7 +483,7 @@ class AppController:
                 cancel_event=self._cnn_cancel
             )
             if self._cnn_cancel.is_set():
-                return                          # cancel_analysis() already navigated
+                return
             if result:
                 Clock.schedule_once(
                     lambda dt: self.on_cnn_result_received(result), 0
@@ -485,7 +498,7 @@ class AppController:
         if self._cnn_timeout_event:
             self._cnn_timeout_event.cancel()
             self._cnn_timeout_event = None
-        self.dm.resume_heartbeat()              # resume on timeout
+        self.dm.resume_heartbeat()
         image_path = self.current_test_data.get('image_path')
         if image_path:
             self.delete_image(image_path)
@@ -498,7 +511,7 @@ class AppController:
         if self._cnn_timeout_event:
             self._cnn_timeout_event.cancel()
             self._cnn_timeout_event = None
-        self.dm.resume_heartbeat()              # resume on success
+        self.dm.resume_heartbeat()
 
         food_type       = result.get('food_type', '').strip().lower()
         no_match_values = {'no_match', 'no match', 'unknown', 'none', '', 'not food'}
