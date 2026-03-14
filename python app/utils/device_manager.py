@@ -136,9 +136,9 @@ class DeviceManager:
         print(f"[DEVICE] Scanning for {len(known)} known device(s)... "
               f"({'mock' if not config.USE_REAL_NETWORK else 'real'})")
         found = self.network.scan_for_devices(
-            known_macs=list(known_macs.keys()),
-            known_names=list(known_names.keys()),
-            timeout=timeout
+            known_macs  = list(known_macs.keys()),
+            known_names = list(known_names.keys()),
+            timeout     = timeout
         )
         if found:
             mac   = found.get('mac', '')
@@ -158,8 +158,24 @@ class DeviceManager:
             return
         phone_ip = self.network.wifi.get_phone_ip()
         if phone_ip:
-            print(f"[DEVICE] Starting heartbeat → phone at {phone_ip}")
-            self._start_heartbeat(phone_ip, on_disconnected=on_disconnected)
+            print(f"[DEVICE] Heartbeat scheduled → phone at {phone_ip} "
+                  f"(15s grace period for phone app to load ViewDataPage)")
+            # ── Grace period before first heartbeat ───────────────────────
+            # After WiFi connects, the phone still needs to:
+            #   1. Receive the IP via BLE notify (~1-3s)
+            #   2. Navigate from pairing screen to ViewDataPage (~2-4s)
+            #   3. Bind port 8080 in _startPhoneServer() (~1s)
+            # Firing heartbeat immediately causes a false disconnect on
+            # first connection. 15s comfortably covers all three steps.
+            import threading
+            threading.Timer(
+                15.0,
+                self._start_heartbeat,
+                kwargs=dict(
+                    phone_address   = phone_ip,
+                    on_disconnected = on_disconnected
+                )
+            ).start()
         else:
             print("[DEVICE] Heartbeat skipped — could not resolve phone IP")
 
@@ -169,13 +185,14 @@ class DeviceManager:
             self.heartbeat.stop()
             self.heartbeat = None
         self.heartbeat = HeartbeatManager(
-            phone_address=phone_address,
-            on_connected=lambda: print("[DEVICE] Phone app ONLINE ✓"),
-            on_disconnected=on_disconnected or (
+            phone_address   = phone_address,
+            on_connected    = lambda: print("[DEVICE] Phone app ONLINE ✓"),
+            on_disconnected = on_disconnected or (
                 lambda: print("[DEVICE] Phone app OFFLINE ✗")
             ),
         )
         self.heartbeat.start()
+        print(f"[DEVICE] Heartbeat started → {phone_address}")
 
     def pause_heartbeat(self):
         if self.heartbeat:
@@ -276,12 +293,14 @@ class NetworkManager:
             except ImportError as e:
                 print(f"[NETWORK] Fallback to MOCK: {e}")
                 from hardware.mock_hardware import MockNetworkManager
-                mock = MockNetworkManager(device_id)
-                self.ble = self.wifi = mock
+                mock      = MockNetworkManager(device_id)
+                self.ble  = mock
+                self.wifi = mock
         else:
             from hardware.mock_hardware import MockNetworkManager
-            mock = MockNetworkManager(device_id)
-            self.ble = self.wifi = mock
+            mock      = MockNetworkManager(device_id)
+            self.ble  = mock
+            self.wifi = mock
             print("[NETWORK] Using MOCK network")
 
     def start_ble_advertising(self):
@@ -309,7 +328,6 @@ class NetworkManager:
         return None
 
     def is_connected_to(self, ssid: str) -> bool:
-        """Proxy to wifi_manager.is_connected_to — used by heartbeat guard."""
         if hasattr(self.wifi, 'is_connected_to'):
             return self.wifi.is_connected_to(ssid)
         return False
@@ -320,17 +338,20 @@ class NetworkManager:
         return False
 
     def notify_enable_hotspot(self):
-        # Always call on ble only — prevents double-fire on mock where ble == wifi
         if hasattr(self.ble, 'notify_enable_hotspot'):
             return self.ble.notify_enable_hotspot()
         return False
 
     def start_wifi_server(self):
+        """Idempotent — safe to call at boot and safe to call again later."""
         if hasattr(self.wifi, 'start_server'):
             self.wifi.start_server()
 
     def stop(self):
-        """Stop WiFi server only — BLE was already stopped after pair."""
+        """
+        Reset WiFi session state (clears phone IP cache).
+        Flask server is NOT stopped — it runs for the app lifetime.
+        """
         if hasattr(self.wifi, 'stop'):
             self.wifi.stop()
         self.mode = 'ble'
