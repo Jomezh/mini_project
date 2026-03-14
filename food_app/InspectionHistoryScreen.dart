@@ -206,6 +206,7 @@ class _InspectionHistoryScreenState extends State<InspectionHistoryScreen> {
     return Colors.green;
   }
 }*/
+/*
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
@@ -361,5 +362,142 @@ class _InspectionHistoryScreenState extends State<InspectionHistoryScreen> {
       return Colors.greenAccent[700]!;
     }
     return Colors.grey;
+  }
+}*/
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:foodapp/pages/sensordata.dart'; // Ensure this import matches your file path
+
+class InspectionHistoryScreen extends StatefulWidget {
+  final String username;
+
+  const InspectionHistoryScreen({super.key, required this.username});
+
+  @override
+  State<InspectionHistoryScreen> createState() => _InspectionHistoryScreenState();
+}
+
+class _InspectionHistoryScreenState extends State<InspectionHistoryScreen> {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      // Matching the AppBar style of HomePage
+      appBar: AppBar(
+        title: Text("${widget.username}'s History"),
+        centerTitle: true,
+        backgroundColor: Colors.blueAccent,
+        foregroundColor: Colors.white,
+      ),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('inspection')
+            .where('username', isEqualTo: widget.username)
+            .orderBy('Time_Stamp', descending: true)
+            .snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(child: Text("Error: ${snapshot.error}"));
+          }
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(
+              child: Text(
+                "No history found.",
+                style: TextStyle(color: Colors.grey),
+              ),
+            );
+          }
+
+          return ListView.builder(
+            padding: const EdgeInsets.all(10),
+            itemCount: snapshot.data!.docs.length,
+            itemBuilder: (context, index) {
+              final doc = snapshot.data!.docs[index];
+              final data = doc.data() as Map<String, dynamic>;
+
+              return Card(
+                elevation: 3,
+                margin: const EdgeInsets.only(bottom: 15),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: ExpansionTile(
+                  leading: Icon(
+                    Icons.analytics,
+                    color: _getSeverityColor(data['Spoilage_Level']),
+                    size: 30,
+                  ),
+                  title: Text(
+                    "Result: ${data['Spoilage_Level'] ?? 'Unknown'}",
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text("ID: ${doc.id}"),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        children: [
+                          _buildDetailRow(Icons.calendar_today, "Date", _formatTimestamp(data['Time_Stamp'])),
+                          _buildDetailRow(Icons.developer_board, "Device", data['device_id']),
+                          const SizedBox(height: 20),
+                          // Button styled exactly like the "Pair Device" button on HomePage
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blueAccent,
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => SensorDataScreen(inspectionId: doc.id),
+                                  ),
+                                );
+                              },
+                              icon: const Icon(Icons.bar_chart, color: Colors.white),
+                              label: const Text("View Raw Data", style: TextStyle(color: Colors.white)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  // Helper for consistent detail rows
+  Widget _buildDetailRow(IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: Colors.blueAccent),
+          const SizedBox(width: 10),
+          Text("$label: ", style: const TextStyle(fontWeight: FontWeight.bold)),
+          Text(value),
+        ],
+      ),
+    );
+  }
+
+  String _formatTimestamp(dynamic ts) {
+    if (ts == null) return "N/A";
+    return (ts as Timestamp).toDate().toString().split('.')[0];
+  }
+
+  Color _getSeverityColor(dynamic level) {
+    String s = level.toString().toLowerCase();
+    if (s.contains('high') || s.contains('bad')) return Colors.red;
+    if (s.contains('medium')) return Colors.orange;
+    return Colors.green;
   }
 }
