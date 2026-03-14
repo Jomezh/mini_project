@@ -22,9 +22,9 @@ class AppController:
         self._cnn_cancel           = Event()
         self._cnn_timeout_event    = None
         self._pairing_in_progress  = False
-        self._wifi_connected       = False   # True once WiFi is confirmed up
-        self._current_ssid         = None    # SSID we're connected to
-        self._connection_time      = 0.0     # timestamp of last successful WiFi connect
+        self._wifi_connected       = False
+        self._current_ssid         = None
+        self._connection_time      = 0.0
 
 
     def on_app_start(self):
@@ -162,7 +162,7 @@ class AppController:
             print(f"[CONTROLLER] WiFi result: {wifiok}")
 
             if wifiok:
-                self._connection_time      = time.time()   # ghost-touch guard timestamp
+                self._connection_time      = time.time()
                 self.current_connected_mac = blemac
                 self._wifi_connected       = True
                 self._current_ssid         = ssid
@@ -312,7 +312,7 @@ class AppController:
             print(f"[CONTROLLER] WiFi result: {wifiok}")
 
             if wifiok:
-                self._connection_time      = time.time()   # ghost-touch guard timestamp
+                self._connection_time      = time.time()
                 self.current_connected_mac = blemac
                 self._wifi_connected       = True          # set BEFORE stop_ble
                 self._current_ssid         = ssid          # set BEFORE stop_ble
@@ -320,7 +320,9 @@ class AppController:
                 pi_ip = self.dm.network.get_local_ip()
                 if pi_ip:
                     self.dm.network.send_ip_to_phone(pi_ip)
-                    time.sleep(2)              # was 1 — give BLE notify more settle time
+                    time.sleep(8)   # ← CHANGED from 2 — gives BLE retry loop
+                                    #   time to land on phone after hotspot-wait
+                                    #   quiet period drops the GATT connection
                 self.dm.network.stop_ble()
                 self.dm.start_heartbeat_after_wifi(
                     on_disconnected=self.on_phone_disconnected
@@ -370,8 +372,6 @@ class AppController:
         Called ONLY by the Forget Device button on home screen.
         Do NOT call on heartbeat failure — use on_phone_disconnected() instead.
         """
-        # Guard: XPT2046 touch residue can fire this immediately after Home
-        # renders. Suppress any call within 5s of WiFi connecting.
         if self._wifi_connected and (time.time() - self._connection_time) < 5.0:
             print("[CONTROLLER] forget_device within 5s of connect — ghost touch, ignoring")
             return
@@ -402,8 +402,6 @@ class AppController:
         """
         Heartbeat callback — fires when phone:8080 is unreachable.
         Only resets to pairing screen if WiFi is also genuinely down.
-        If WiFi is still active, port 8080 being closed is an app-side
-        issue — suppress the reset so HMI stays on home/capture screen.
         """
         if self._current_ssid and self.dm.network.is_connected_to(self._current_ssid):
             print(

@@ -119,14 +119,20 @@ class BLEManager:
         return None
 
     def send_ip_to_phone(self, ip_address: str) -> bool:
+        """
+        Set the IP characteristic and start a retry-notify loop.
+        Retries up to 5× with 1.5s gaps — handles Android BLE dropping
+        during the 25s hotspot-wait quiet period. The phone will receive
+        it by attempt 2–3 once it reconnects or subscribes.
+        """
         try:
             self._outgoing['ip'] = ip_address
+            print(f"[BLE] IP characteristic set: {ip_address}")
+
             if self._server and self._loop:
                 asyncio.run_coroutine_threadsafe(
-                    self._notify_characteristic(CHAR_IP_UUID),
-                    self._loop
+                    self._notify_ip_with_retry(ip_address), self._loop
                 )
-            print(f"[BLE] IP characteristic set: {ip_address}")
             return True
         except Exception as e:
             print(f"[BLE] send_ip_to_phone error: {e}")
@@ -323,6 +329,38 @@ class BLEManager:
                       f"(phone may not be subscribed yet)")
         except Exception as e:
             print(f"[BLE] Notify error ({char_uuid[-4:]}): {e}")
+
+    async def _notify_ip_with_retry(self, ip_address: str):
+        """
+        Retry IP notify up to 5× with 1.5s gaps.
+
+        Why: Android BLE goes quiet during the 25s hotspot-wait window and
+        may drop the GATT connection. By the time WiFi is up, the phone
+        reconnects — but it takes 2–4s to re-subscribe to notifications.
+        Retrying ensures the IP lands once the phone is ready.
+        """
+        for attempt in range(1, 6):
+            # First attempt fires quickly; subsequent ones wait 1.5s
+            await asyncio.sleep(0.5 if attempt == 1 else 1.5)
+
+            if not self._server:
+                print("[BLE] Server gone — stopping IP notify retries")
+                return
+
+            try:
+                result = self._server.update_value(
+                    GATT_SERVICE_UUID, CHAR_IP_UUID
+                )
+                if result:
+                    print(f"[BLE] ✓ IP notify succeeded on attempt {attempt}")
+                    return
+                print(f"[BLE] IP notify returned False "
+                      f"attempt {attempt}/5 — retrying...")
+            except Exception as e:
+                print(f"[BLE] IP notify error attempt {attempt}: {e}")
+
+        print("[BLE] IP notify exhausted 5 attempts — "
+              "phone will fall back to reading characteristic directly")
 
 
     # ── BLE Scan ──────────────────────────────────────────────────────────────
