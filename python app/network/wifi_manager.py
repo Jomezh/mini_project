@@ -31,14 +31,14 @@ class WiFiManager:
     FLASK_PORT = 8765
     PHONE_PORT = 8080
 
-    _frame_lock            = threading.Lock()
-    _latest_frame: bytes   = None   # raw JPEG bytes written by camera_manager
+    _frame_lock          = threading.Lock()
+    _latest_frame: bytes = None   # raw JPEG bytes written by camera_manager
 
     def __init__(self):
-        self.phone_ip       = None
-        self._server_ready  = threading.Event()
-        self._results       = {}
-        self._results_lock  = threading.Lock()
+        self.phone_ip      = None
+        self._server_ready = threading.Event()
+        self._results      = {}
+        self._results_lock = threading.Lock()
         self._result_events = {
             'cnn_result': threading.Event(),
             'ml_result':  threading.Event(),
@@ -58,18 +58,34 @@ class WiFiManager:
     # ── WiFi Connection ───────────────────────────────────────────────────
 
     def connect(self, ssid: str, password: str = None) -> bool:
+        """
+        Connect to hotspot and wait until BOTH:
+          1. WiFi is associated (iwgetid confirms SSID)
+          2. DHCP has assigned an IP (ip addr shows inet on wlan0)
+
+        Returning True only when both are true means get_local_ip() will
+        ALWAYS succeed immediately after connect() — no separate DHCP wait
+        needed in the controller, IP is ready to send over BLE instantly.
+        """
         print(f"[WIFI] Scheduling connection to '{ssid}' in 2s...")
         threading.Thread(
             target=self._do_connect,
             args=(ssid, password),
             daemon=True
         ).start()
-        for _ in range(45):
+
+        for _ in range(60):   # up to 60s — covers association + DHCP
             time.sleep(1)
             if self.is_connected_to(ssid):
-                print(f"[WIFI] Connected to '{ssid}'")
-                return True
-        print(f"[WIFI] Failed to connect to '{ssid}' after 45s")
+                ip = self.get_local_ip()
+                if ip:
+                    print(f"[WIFI] Connected to '{ssid}' — IP ready: {ip}")
+                    return True
+                else:
+                    # Associated but DHCP not done yet — keep waiting
+                    print("[WIFI] Associated, waiting for DHCP...")
+
+        print(f"[WIFI] Failed to connect+DHCP for '{ssid}' within 60s")
         return False
 
     def _do_connect(self, ssid: str, password: str = None):
@@ -164,11 +180,9 @@ class WiFiManager:
 
     def get_local_ip(self) -> str:
         """
-        Read wlan0 IP directly from the kernel via 'ip addr show wlan0'.
-        This is a LIVE read — no cached values, always reflects current
-        DHCP state. netifaces caches the interface state and misses new
-        DHCP assignments on first connection. This fixes the first-try IP
-        being None even though WiFi has just associated.
+        Read wlan0 IP directly from kernel via 'ip addr show wlan0'.
+        Live read — no cached values, always reflects current DHCP state.
+        netifaces caches interface state and misses new DHCP assignments.
         """
         # Primary: subprocess ip addr — live kernel read, no cache
         try:
@@ -211,9 +225,7 @@ class WiFiManager:
     def get_phone_ip(self) -> str:
         """
         Get phone IP (default gateway on wlan0) via 'ip route' — live kernel
-        read. More reliable than netifaces which can return stale gateway.
-        Cache is cleared on stop() so stale IPs from previous sessions
-        are never reused.
+        read. Cache cleared on stop() so stale IPs are never reused.
         """
         if self.phone_ip:
             return self.phone_ip
@@ -252,10 +264,7 @@ class WiFiManager:
     # ── Flask Server (Pi-side, port 8765) ─────────────────────────────────
 
     def start_server(self):
-        """
-        Idempotent — safe to call multiple times.
-        If Flask is already running, this is a no-op.
-        """
+        """Idempotent — safe to call multiple times. No-op if already running."""
         if self._flask_server is not None:
             print("[WIFI] Flask server already running — skipping restart")
             return
@@ -452,7 +461,6 @@ class WiFiManager:
         if existing:
             print("[WIFI] CNN result already available")
             return existing
-
         event   = self._result_events['cnn_result']
         elapsed = 0
         while elapsed < timeout:
@@ -463,7 +471,6 @@ class WiFiManager:
                 with self._results_lock:
                     return self._results.get('cnn_result')
             elapsed += 1
-
         print("[WIFI] CNN result wait timed out")
         return None
 
@@ -474,7 +481,6 @@ class WiFiManager:
         if existing:
             print("[WIFI] ML result already available")
             return existing
-
         event   = self._result_events['ml_result']
         elapsed = 0
         while elapsed < timeout:
@@ -485,7 +491,6 @@ class WiFiManager:
                 with self._results_lock:
                     return self._results.get('ml_result')
             elapsed += 1
-
         print("[WIFI] ML result wait timed out")
         return None
 
@@ -532,11 +537,9 @@ class WiFiManager:
 
     def stop(self):
         """
-        Stop WiFi server only when called from forget_device / on_phone_disconnected.
-        Flask stays alive (started at boot, lives for the app lifetime).
-        Only phone_ip is reset so stale gateway from previous session is not reused.
+        Reset WiFi session state only. Flask keeps running — it was started
+        at app boot and lives for the full app lifetime. Clearing phone_ip
+        ensures the stale gateway from this session is not reused next time.
         """
-        # Do NOT shut down Flask — it was started at app boot and should
-        # keep running. Only reset the phone IP cache.
         self.phone_ip = None
         print("[WIFI] WiFi session reset (Flask keeps running)")

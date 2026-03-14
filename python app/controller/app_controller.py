@@ -28,13 +28,8 @@ class AppController:
 
 
     def on_app_start(self):
-        # Hardware init
         Thread(target=self.dm.hardware.initialize, daemon=True).start()
-        # ── Start Flask server immediately at boot ────────────────────────
-        # Flask binds to 0.0.0.0 so it works on any interface.
-        # Starting here means it is ALWAYS ready before any pairing or
-        # auto-connect attempt — the IP is the only thing that changes,
-        # not whether the server is up.
+        # Flask starts at boot — always ready before any pairing attempt
         Thread(target=self.dm.network.start_wifi_server, daemon=True).start()
 
 
@@ -132,8 +127,6 @@ class AppController:
 
         self._wifi_cancel.clear()
 
-        # Flask already running from on_app_start — no start_wifi_server() needed
-
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             if self._wifi_cancel.is_set():
                 print("[CONTROLLER] Auto-connect cancelled")
@@ -212,7 +205,6 @@ class AppController:
         if not success:
             screen.show_qr(message="Failed to start BLE - try again")
             return
-        # Flask already running from on_app_start — no start_wifi_server() here
         self.ble_timeout_event = Clock.schedule_once(
             lambda dt: self.on_ble_pairing_timeout(), 180
         )
@@ -319,34 +311,25 @@ class AppController:
             print(f"[CONTROLLER] WiFi result: {wifiok}")
 
             if wifiok:
+                # ── IP is guaranteed ready here ───────────────────────────
+                # connect() only returns True once BOTH WiFi association
+                # AND DHCP IP assignment are confirmed. No separate wait
+                # needed — get_local_ip() will return instantly.
                 self._connection_time      = time.time()
                 self.current_connected_mac = blemac
                 self._wifi_connected       = True
                 self._current_ssid         = ssid
                 self.dm.update_last_connected(blemac)
 
-                # ── Wait for DHCP to assign IP (up to 10s) ───────────────
-                # WiFi association completes before DHCP lease arrives.
-                # get_local_ip() returns None until DHCP responds — retry
-                # loop prevents silently skipping the BLE IP-send entirely.
-                pi_ip = None
-                for ip_attempt in range(1, 11):
-                    pi_ip = self.dm.network.get_local_ip()
-                    if pi_ip:
-                        print(f"[CONTROLLER] Got local IP on attempt "
-                              f"{ip_attempt}/10: {pi_ip}")
-                        break
-                    print(f"[CONTROLLER] Waiting for DHCP... ({ip_attempt}/10)")
-                    time.sleep(1)
-
+                pi_ip = self.dm.network.get_local_ip()
                 if pi_ip:
                     self.dm.network.send_ip_to_phone(pi_ip)
-                    # 8s: covers BLE retry loop (5 × 1.5s) + Android
-                    # reconnect latency after 25s hotspot-wait quiet period
+                    # 8s covers BLE retry loop (5 × 1.5s) + Android
+                    # reconnect latency after hotspot-wait quiet period
                     time.sleep(8)
                 else:
-                    print("[CONTROLLER] !! DHCP gave no IP after 10s — "
-                          "phone will not receive IP")
+                    # Should never happen — connect() guarantees IP
+                    print("[CONTROLLER] !! Unexpected: no IP after connect()")
                     time.sleep(3)
 
                 self.dm.network.stop_ble()
@@ -393,11 +376,6 @@ class AppController:
 
 
     def forget_device(self):
-        """
-        Intentional user action — removes device permanently.
-        Called ONLY by the Forget Device button on home screen.
-        Do NOT call on heartbeat failure — use on_phone_disconnected() instead.
-        """
         if self._wifi_connected and (time.time() - self._connection_time) < 5.0:
             print("[CONTROLLER] forget_device within 5s of connect — ghost touch, ignoring")
             return
@@ -425,10 +403,6 @@ class AppController:
 
 
     def on_phone_disconnected(self):
-        """
-        Heartbeat callback — fires when phone:8080 is unreachable.
-        Only resets to pairing screen if WiFi is also genuinely down.
-        """
         if self._current_ssid and self.dm.network.is_connected_to(self._current_ssid):
             print(
                 "[CONTROLLER] Heartbeat ping failed but WiFi still active — "
