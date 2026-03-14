@@ -6,7 +6,7 @@ import os
 
 WIFI_RETRY_LIMIT        = 3
 WIFI_RETRY_INTERVAL     = 10
-WIFI_FIRST_HOTSPOT_WAIT = 25   # was 15 — hotspot needs more warmup on cold boot
+WIFI_FIRST_HOTSPOT_WAIT = 25
 
 
 class AppController:
@@ -28,7 +28,14 @@ class AppController:
 
 
     def on_app_start(self):
+        # Hardware init
         Thread(target=self.dm.hardware.initialize, daemon=True).start()
+        # ── Start Flask server immediately at boot ────────────────────────
+        # Flask binds to 0.0.0.0 so it works on any interface.
+        # Starting here means it is ALWAYS ready before any pairing or
+        # auto-connect attempt — the IP is the only thing that changes,
+        # not whether the server is up.
+        Thread(target=self.dm.network.start_wifi_server, daemon=True).start()
 
 
     def cleanup(self):
@@ -125,7 +132,7 @@ class AppController:
 
         self._wifi_cancel.clear()
 
-        self.dm.network.start_wifi_server()
+        # Flask already running from on_app_start — no start_wifi_server() needed
 
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             if self._wifi_cancel.is_set():
@@ -205,7 +212,7 @@ class AppController:
         if not success:
             screen.show_qr(message="Failed to start BLE - try again")
             return
-        self.dm.network.start_wifi_server()
+        # Flask already running from on_app_start — no start_wifi_server() here
         self.ble_timeout_event = Clock.schedule_once(
             lambda dt: self.on_ble_pairing_timeout(), 180
         )
@@ -314,15 +321,34 @@ class AppController:
             if wifiok:
                 self._connection_time      = time.time()
                 self.current_connected_mac = blemac
-                self._wifi_connected       = True          # set BEFORE stop_ble
-                self._current_ssid         = ssid          # set BEFORE stop_ble
+                self._wifi_connected       = True
+                self._current_ssid         = ssid
                 self.dm.update_last_connected(blemac)
-                pi_ip = self.dm.network.get_local_ip()
+
+                # ── Wait for DHCP to assign IP (up to 10s) ───────────────
+                # WiFi association completes before DHCP lease arrives.
+                # get_local_ip() returns None until DHCP responds — retry
+                # loop prevents silently skipping the BLE IP-send entirely.
+                pi_ip = None
+                for ip_attempt in range(1, 11):
+                    pi_ip = self.dm.network.get_local_ip()
+                    if pi_ip:
+                        print(f"[CONTROLLER] Got local IP on attempt "
+                              f"{ip_attempt}/10: {pi_ip}")
+                        break
+                    print(f"[CONTROLLER] Waiting for DHCP... ({ip_attempt}/10)")
+                    time.sleep(1)
+
                 if pi_ip:
                     self.dm.network.send_ip_to_phone(pi_ip)
-                    time.sleep(8)   # ← CHANGED from 2 — gives BLE retry loop
-                                    #   time to land on phone after hotspot-wait
-                                    #   quiet period drops the GATT connection
+                    # 8s: covers BLE retry loop (5 × 1.5s) + Android
+                    # reconnect latency after 25s hotspot-wait quiet period
+                    time.sleep(8)
+                else:
+                    print("[CONTROLLER] !! DHCP gave no IP after 10s — "
+                          "phone will not receive IP")
+                    time.sleep(3)
+
                 self.dm.network.stop_ble()
                 self.dm.start_heartbeat_after_wifi(
                     on_disconnected=self.on_phone_disconnected
