@@ -311,10 +311,6 @@ class AppController:
             print(f"[CONTROLLER] WiFi result: {wifiok}")
 
             if wifiok:
-                # ── IP is guaranteed ready here ───────────────────────────
-                # connect() only returns True once BOTH WiFi association
-                # AND DHCP IP assignment are confirmed. No separate wait
-                # needed — get_local_ip() will return instantly.
                 self._connection_time      = time.time()
                 self.current_connected_mac = blemac
                 self._wifi_connected       = True
@@ -323,12 +319,22 @@ class AppController:
 
                 pi_ip = self.dm.network.get_local_ip()
                 if pi_ip:
+                    # ── Primary: POST IP to phone over WiFi ───────────────
+                    # BLE-independent — works even if BLE dropped during
+                    # the 25s hotspot-wait quiet period.
+                    # Phone's PhoneServer /device_ip triggers navigation.
+                    wifi_posted = self.dm.network.post_ip_via_wifi(pi_ip)
+
+                    # ── Fallback: BLE notify ──────────────────────────────
+                    # Runs in parallel — phone ignores duplicate if WiFi
+                    # POST already triggered navigation.
                     self.dm.network.send_ip_to_phone(pi_ip)
-                    # 8s covers BLE retry loop (5 × 1.5s) + Android
-                    # reconnect latency after hotspot-wait quiet period
-                    time.sleep(8)
+
+                    # Shorter sleep if WiFi POST succeeded — BLE retry loop
+                    # not needed. Longer if WiFi failed, BLE is the only path.
+                    time.sleep(3 if wifi_posted else 8)
                 else:
-                    # Should never happen — connect() guarantees IP
+                    # Should never happen — connect() guarantees DHCP ready
                     print("[CONTROLLER] !! Unexpected: no IP after connect()")
                     time.sleep(3)
 

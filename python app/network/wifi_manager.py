@@ -63,9 +63,9 @@ class WiFiManager:
           1. WiFi is associated (iwgetid confirms SSID)
           2. DHCP has assigned an IP (ip addr shows inet on wlan0)
 
-        Returning True only when both are true means get_local_ip() will
-        ALWAYS succeed immediately after connect() — no separate DHCP wait
-        needed in the controller, IP is ready to send over BLE instantly.
+        Returning True only when both are confirmed means get_local_ip()
+        and post_ip_via_wifi() will always succeed immediately after
+        connect() — no separate DHCP wait needed in the controller.
         """
         print(f"[WIFI] Scheduling connection to '{ssid}' in 2s...")
         threading.Thread(
@@ -82,7 +82,6 @@ class WiFiManager:
                     print(f"[WIFI] Connected to '{ssid}' — IP ready: {ip}")
                     return True
                 else:
-                    # Associated but DHCP not done yet — keep waiting
                     print("[WIFI] Associated, waiting for DHCP...")
 
         print(f"[WIFI] Failed to connect+DHCP for '{ssid}' within 60s")
@@ -182,7 +181,8 @@ class WiFiManager:
         """
         Read wlan0 IP directly from kernel via 'ip addr show wlan0'.
         Live read — no cached values, always reflects current DHCP state.
-        netifaces caches interface state and misses new DHCP assignments.
+        netifaces caches interface state and misses new DHCP assignments
+        on first connection.
         """
         # Primary: subprocess ip addr — live kernel read, no cache
         try:
@@ -259,6 +259,45 @@ class WiFiManager:
                 pass
 
         return None
+
+    def post_ip_via_wifi(self, pi_ip: str) -> bool:
+        """
+        POST Pi's own IP to phone over WiFi — completely BLE-independent.
+        Primary IP delivery path. Phone's PhoneServer handles POST /device_ip
+        and triggers navigation to ViewDataPage immediately on receipt.
+        Called right after connect() returns True (DHCP guaranteed ready).
+        """
+        if not HAS_REQUESTS:
+            print("[WIFI] requests not available — cannot post IP via WiFi")
+            return False
+
+        phone_ip = self.get_phone_ip()
+        if not phone_ip:
+            print("[WIFI] Phone IP unknown — cannot post IP via WiFi")
+            return False
+
+        url = f"http://{phone_ip}:{self.PHONE_PORT}/device_ip"
+        print(f"[WIFI] POSTing Pi IP to phone: {url}")
+
+        for attempt in range(1, 4):
+            try:
+                resp = reqlib.post(
+                    url,
+                    json    = {'pi_ip': pi_ip},
+                    timeout = 5
+                )
+                if resp.status_code == 200:
+                    print(f"[WIFI] ✓ IP delivered to phone via WiFi "
+                          f"(attempt {attempt}): {pi_ip}")
+                    return True
+                print(f"[WIFI] IP post HTTP {resp.status_code} attempt {attempt}")
+            except Exception as e:
+                print(f"[WIFI] IP post attempt {attempt} failed: {e}")
+                if attempt < 3:
+                    time.sleep(1)
+
+        print("[WIFI] ✗ IP WiFi POST failed — BLE notify is fallback")
+        return False
 
 
     # ── Flask Server (Pi-side, port 8765) ─────────────────────────────────
@@ -537,9 +576,9 @@ class WiFiManager:
 
     def stop(self):
         """
-        Reset WiFi session state only. Flask keeps running — it was started
-        at app boot and lives for the full app lifetime. Clearing phone_ip
-        ensures the stale gateway from this session is not reused next time.
+        Reset WiFi session state only. Flask keeps running — started at app
+        boot and lives for the full app lifetime. Clearing phone_ip ensures
+        the stale gateway from this session is not reused next time.
         """
         self.phone_ip = None
         print("[WIFI] WiFi session reset (Flask keeps running)")

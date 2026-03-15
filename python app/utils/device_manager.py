@@ -162,11 +162,11 @@ class DeviceManager:
                   f"(15s grace period for phone app to load ViewDataPage)")
             # ── Grace period before first heartbeat ───────────────────────
             # After WiFi connects, the phone still needs to:
-            #   1. Receive the IP via BLE notify (~1-3s)
-            #   2. Navigate from pairing screen to ViewDataPage (~2-4s)
-            #   3. Bind port 8080 in _startPhoneServer() (~1s)
-            # Firing heartbeat immediately causes a false disconnect on
-            # first connection. 15s comfortably covers all three steps.
+            #   1. Receive IP via WiFi POST /device_ip (~1s)
+            #   2. Navigate from HotspotPage to ViewDataPage (~2-4s)
+            #   3. Bind port 8080 in PhoneServer.start() (~1s)
+            # Firing heartbeat immediately causes a false disconnect.
+            # 15s comfortably covers all three steps.
             import threading
             threading.Timer(
                 15.0,
@@ -327,6 +327,11 @@ class NetworkManager:
             return self.wifi.get_local_ip()
         return None
 
+    def get_phone_ip(self):
+        if hasattr(self.wifi, 'get_phone_ip'):
+            return self.wifi.get_phone_ip()
+        return None
+
     def is_connected_to(self, ssid: str) -> bool:
         if hasattr(self.wifi, 'is_connected_to'):
             return self.wifi.is_connected_to(ssid)
@@ -335,6 +340,12 @@ class NetworkManager:
     def send_ip_to_phone(self, ip):
         if hasattr(self.ble, 'send_ip_to_phone'):
             return self.ble.send_ip_to_phone(ip)
+        return False
+
+    def post_ip_via_wifi(self, pi_ip: str) -> bool:
+        """Primary IP delivery — POSTs Pi IP to phone over WiFi, BLE-independent."""
+        if hasattr(self.wifi, 'post_ip_via_wifi'):
+            return self.wifi.post_ip_via_wifi(pi_ip)
         return False
 
     def notify_enable_hotspot(self):
