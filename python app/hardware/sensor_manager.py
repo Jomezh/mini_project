@@ -44,13 +44,19 @@ CSV_COLUMNS = [
     'Temperature_mean', 'Temperature_std', 'Temperature_max',
 ]
 
+# Tried in order — first existing node wins.
+# Display/touch typically consume spidev0.0 + spidev0.1,
+# so SPI1 (spidev1.0) is the safe fallback for MCP3008s.
+_SPI_CANDIDATES = [(0, 1), (1, 0), (0, 0)]
+
 
 class SensorManager:
 
     def __init__(self):
         self._priming_start = None
         self._dht           = None
-        # ↑ No _spi here — opened fresh per session to avoid CE0/display conflict
+        self._spi_bus       = None   # detected in initialize()
+        self._spi_dev       = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -60,9 +66,24 @@ class SensorManager:
         GPIO.setup(CS_MCP1,    GPIO.OUT, initial=GPIO.HIGH)
         GPIO.setup(CS_MCP2,    GPIO.OUT, initial=GPIO.HIGH)
         self._dht = adafruit_dht.DHT11(getattr(board, f'D{DHT_PIN_NUM}'))
-        # SPI is NOT opened here — display/touch own CE0/CE1 permanently.
-        # We open a fresh handle only during sensor reading, then close it.
-        print("[SENSORS] Initialized — MOSFET off, SPI deferred")
+
+        # Detect which spidev node is free (display may own some)
+        self._spi_bus, self._spi_dev = self._detect_spi()
+        print(f"[SENSORS] Initialized — will use /dev/spidev{self._spi_bus}.{self._spi_dev}")
+
+    def _detect_spi(self):
+        for bus, dev in _SPI_CANDIDATES:
+            path = f'/dev/spidev{bus}.{dev}'
+            if os.path.exists(path):
+                print(f"[SENSORS] Found SPI device: {path}")
+                return bus, dev
+        # Nothing found — print helpful message
+        available = [f for f in os.listdir('/dev') if f.startswith('spi')]
+        raise OSError(
+            f"No usable spidev found. Available: {available or 'none'}.\n"
+            f"Enable SPI1 by adding 'dtoverlay=spi1-1cs' to /boot/config.txt "
+            f"and reboot, or check your display overlay config."
+        )
 
     def cleanup(self):
         self._mosfet_off()
@@ -77,22 +98,20 @@ class SensorManager:
 
     def _open_spi(self):
         """Open a fresh SPI handle for one reading session.
-
-        no_cs=True: hardware CE0/CE1 are owned by display/touch — we never
-        assert them. CS lines (GPIO5, GPIO6) are driven manually.
+        no_cs=True: CE pins owned by display/touch — we drive CS manually.
         """
         spi = spidev.SpiDev()
-        spi.open(0, 0)
-        spi.no_cs         = True
-        spi.max_speed_hz  = 1_350_000
-        spi.mode          = 0b00
+        spi.open(self._spi_bus, self._spi_dev)
+        spi.no_cs        = True
+        spi.max_speed_hz = 1_350_000
+        spi.mode         = 0b00
         return spi
 
     def _close_spi(self, spi):
         try: spi.close()
         except Exception: pass
 
-    # ── ADC read ──────────────────────────────────────────────────────────────
+    # ── ADC ───────────────────────────────────────────────────────────────────
 
     def _read_adc(self, spi, cs_pin, channel):
         GPIO.output(cs_pin, GPIO.LOW)
@@ -102,7 +121,7 @@ class SensorManager:
         return ((result[1] & 3) << 8) | result[2]
 
     def _adc_to_rs(self, adc_raw):
-        """ADC → RS in kΩ, matching training data convention.
+        """ADC → RS in kΩ matching training data convention.
 
         V_pin = ADC / 1023 × VREF
         V_ao  = V_pin × 3          (undo 20k/10k divider)
@@ -166,7 +185,7 @@ class SensorManager:
 
         raw = {s: [] for s in MCP1_CHANNELS + MCP2_CHANNELS + ['Temperature', 'Humidity']}
 
-        print(f"[SENSORS] Opening SPI for reading session")
+        print(f"[SENSORS] Opening SPI /dev/spidev{self._spi_bus}.{self._spi_dev}")
         spi = self._open_spi()
 
         try:

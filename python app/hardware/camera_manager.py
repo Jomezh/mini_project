@@ -28,6 +28,7 @@ class CameraManager:
         self._initialized    = False
         self._capturing      = False
         self._starting       = False
+        self._last_error     = None   # stores last exception for debugging
 
     def initialize(self):
         if not HAS_CAMERA:
@@ -44,16 +45,18 @@ class CameraManager:
         if self.preview_active or self._starting:
             print("[CAMERA] Preview already active/starting — skipped")
             return
-        self._starting = True
+        self._starting    = True
+        self._last_error  = None
         threading.Thread(target=self._start_preview_worker, daemon=True).start()
 
     def _start_preview_worker(self):
         try:
+            time.sleep(1.0)      # give kernel time to release camera fd between sessions
             self.camera = Picamera2()
             cfg = self.camera.create_preview_configuration(
                 main={
                     'size':   (self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT),
-                    'format': 'RGB888'          # RGB888 = RGB — no flip needed
+                    'format': 'RGB888'
                 },
                 buffer_count=4
             )
@@ -62,6 +65,7 @@ class CameraManager:
             self.preview_active = True
             print("[CAMERA] Preview started")
         except Exception as e:
+            self._last_error = e
             print(f"[CAMERA] Preview start error: {e}")
             self.preview_active = False
             try:
@@ -86,7 +90,7 @@ class CameraManager:
             self.camera          = None
             self.preview_active  = False
             self.current_texture = None
-            self._starting       = False   # ← clear starting flag too
+            self._starting       = False
             print("[CAMERA] Preview stopped")
 
     def get_preview_texture(self):
@@ -94,33 +98,30 @@ class CameraManager:
             return None
         try:
             with self._lock:
-                frame   = self.camera.capture_array("main")
-                h, w, _ = frame.shape
-                # RGB888 is already RGB — just flip vertically for Kivy origin
-                flipped = frame[::-1, :, :].copy()
-                texture = Texture.create(size=(w, h), colorfmt='rgb')
+                frame     = self.camera.capture_array("main")
+                h, w, _   = frame.shape
+                frame_rgb = frame[:, :, ::-1].copy()   # BGR → RGB
+                flipped   = frame_rgb[::-1, :, :]      # vertical flip for Kivy origin
+                texture   = Texture.create(size=(w, h), colorfmt='bgr')
                 texture.blit_buffer(
                     flipped.tobytes(),
-                    colorfmt='rgb', bufferfmt='ubyte'
+                    colorfmt='bgr', bufferfmt='ubyte'
                 )
                 self.current_texture = texture
                 return texture
         except Exception as e:
             print(f"[CAMERA] Frame error: {e}")
-            return self.current_texture     # last good frame on transient error
+            return self.current_texture
 
     def is_preview_ready(self):
-        """Capture screen polls this to know when to start the preview clock."""
         return self.preview_active
+
+    def get_last_error(self):
+        return self._last_error
 
     # ── Capture ────────────────────────────────────────────────────────────────
 
     def capture_image(self):
-        """
-        Capture a full-res still. Preview must already be stopped by the
-        caller (capture_screen._trigger_capture calls stop_preview first).
-        Does NOT restart preview — screen lifecycle manages that.
-        """
         if self._capturing:
             print("[CAMERA] Capture already in progress")
             return None
@@ -134,6 +135,7 @@ class CameraManager:
         filename = os.path.join(captures_dir, f"capture_{timestamp}.jpg")
 
         try:
+            time.sleep(0.5)      # ensure preview fully released before reopening
             self.camera = Picamera2()
             cfg = self.camera.create_still_configuration(
                 main={
@@ -143,7 +145,7 @@ class CameraManager:
             )
             self.camera.configure(cfg)
             self.camera.start()
-            time.sleep(2)               # auto-exposure settle
+            time.sleep(2)        # auto-exposure settle
             self.camera.capture_file(filename)
             self.camera.stop()
             self.camera.close()
@@ -164,8 +166,6 @@ class CameraManager:
 
         finally:
             self._capturing = False
-            # ↑ No preview restart here — capture_screen.on_enter handles it
-            #   when the screen returns after CNN result
 
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
@@ -173,3 +173,4 @@ class CameraManager:
         self.stop_preview()
         self._initialized = False
         print("[CAMERA] Cleanup done")
+
