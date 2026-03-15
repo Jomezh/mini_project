@@ -11,25 +11,38 @@ if config.IS_RASPBERRY_PI:
     import board
     import adafruit_dht
 
+# ── Pin / circuit constants ───────────────────────────────────────────────────
 MOSFET_PIN   = 26
-CS_MCP1      = 5
-CS_MCP2      = 6
+CS_MCP1      = 5       # GPIO 5 → MCP3008 #1  (MQ2,MQ3,MQ4,MQ5,MQ6,MQ8,MQ9,MQ135)
+CS_MCP2      = 6       # GPIO 6 → MCP3008 #2  (MQ136)
 DHT_PIN_NUM  = 4
 
-VREF         = 3.3
-VCC_MQ       = 5.0
-RL           = 1000.0
-R_UPPER      = 20000.0
-R_LOWER      = 10000.0
+VREF         = 3.3     # MCP3008 reference voltage
+VCC_MQ       = 5.0     # MQ sensor supply voltage
+RL_KΩ        = 1.0     # Load resistor in kΩ — training data uses kΩ unit
+R_UPPER      = 20000.0 # Voltage-divider top    (MQ AO → MCP pin)
+R_LOWER      = 10000.0 # Voltage-divider bottom (MCP pin → GND)
 DIVIDER_GAIN = (R_UPPER + R_LOWER) / R_LOWER   # 3.0
+#
+#  MQ AO ──[20kΩ]──┬── MCP3008 CHx
+#                  │
+#               [10kΩ]
+#                  │
+#                 GND
+#
+#  V_ao  = V_pin × 3          (undo divider)
+#  RS_kΩ = (VCC - V_ao) / V_ao × RL_kΩ    → result in kΩ, matches training data
 
+# ── Timing ────────────────────────────────────────────────────────────────────
 WARMUP_SECS  = 30
 N_SAMPLES    = 30
 SAMPLE_DELAY = 1.0
 
+# ── Channel maps ──────────────────────────────────────────────────────────────
 MCP1_CHANNELS = ['MQ2','MQ3','MQ4','MQ5','MQ6','MQ8','MQ9','MQ135']
 MCP2_CHANNELS = ['MQ136']
 
+# ── CSV columns — must match model_feature_33.pkl exactly ────────────────────
 CSV_COLUMNS = [
     'MQ135_mean','MQ135_std','MQ135_max',
     'MQ136_mean','MQ136_std','MQ136_max',
@@ -51,6 +64,8 @@ class SensorManager:
         self._priming_start = None
         self._spi           = None
         self._dht           = None
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def initialize(self):
         GPIO.setmode(GPIO.BCM)
@@ -112,16 +127,21 @@ class SensorManager:
         return ((result[1] & 3) << 8) | result[2]
 
     def _adc_to_rs(self, adc_raw):
-        # V_pin = adc/1023 × VREF
-        # V_ao  = V_pin × 3          (undo 20k/10k divider)
-        # RS    = RL × (VCC - V_ao) / V_ao
+        """Convert raw ADC → sensor resistance RS in kΩ.
+
+        Matches training data convention exactly:
+          V_pin = ADC / 1023 × VREF        (MCP3008 pin voltage, after divider)
+          V_ao  = V_pin × DIVIDER_GAIN     (undo 20k/10k divider → real MQ AO voltage)
+          RS_kΩ = (VCC_MQ − V_ao) / V_ao × RL_kΩ
+        Result in kΩ — identical scale to training CSV (values ~10–45 range).
+        """
         if adc_raw <= 0:
             return float('nan')
         v_pin = (adc_raw / 1023.0) * VREF
         v_ao  = v_pin * DIVIDER_GAIN
         if v_ao <= 0.0 or v_ao >= VCC_MQ:
             return float('nan')
-        return RL * (VCC_MQ - v_ao) / v_ao
+        return (VCC_MQ - v_ao) / v_ao * RL_KΩ
 
     # ── DHT11 ─────────────────────────────────────────────────────────────────
 
