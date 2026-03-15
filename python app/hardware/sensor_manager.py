@@ -1,249 +1,198 @@
 import time
-import random
+import os
+import csv
+import math
+from datetime import datetime
 import config
 
+if config.IS_RASPBERRY_PI:
+    import RPi.GPIO as GPIO
+    import spidev
+    import board
+    import adafruit_dht
 
-class MockNetworkManager:
-    """
-    Simulates all BLE/WiFi states.
-    BLE (device nearby) and hotspot (WiFi available) are independent flags.
+MOSFET_PIN   = 26
+CS_MCP1      = 5
+CS_MCP2      = 6
+DHT_PIN_NUM  = 4
 
-    config.MOCK_BLE_DEVICE_FOUND:
-        True  → scan finds phone → proceeds to WiFi connect
-        False → scan finds nothing → QR screen shown
+VREF         = 3.3
+VCC_MQ       = 5.0
+RL           = 1000.0
+R_UPPER      = 20000.0
+R_LOWER      = 10000.0
+DIVIDER_GAIN = (R_UPPER + R_LOWER) / R_LOWER   # 3.0
 
-    config.MOCK_HOTSPOT_ON:
-        True  → WiFi connect succeeds
-        False → hotspot off → retry prompt shown, BLE notified
-    """
+WARMUP_SECS  = 30
+N_SAMPLES    = 30
+SAMPLE_DELAY = 1.0
 
-    def __init__(self, device_id):
-        self.device_id = device_id
-        self.mode      = 'ble'
+MCP1_CHANNELS = ['MQ2','MQ3','MQ4','MQ5','MQ6','MQ8','MQ9','MQ135']
+MCP2_CHANNELS = ['MQ136']
 
-    # ── BLE ─────────────────────────────────────────────
-
-    def start_advertising(self):
-        return self.start_ble_advertising()
-
-    def start_ble_advertising(self):
-        ble_name = f"MiniK-{self.device_id[-6:]}"
-        print(f"[MOCK BLE] Advertising as '{ble_name}' "
-              f"(overrides system hostname)")
-        return True
-
-    def scan_for_devices(self, known_macs, known_names, timeout=10):
-        """
-        Simulate BLE scan.
-        Returns found device dict if MOCK_BLE_DEVICE_FOUND=True and list non-empty.
-        Returns None if MOCK_BLE_DEVICE_FOUND=False → triggers QR screen.
-        """
-        print(f"[MOCK BLE] Scanning ({timeout}s) for "
-              f"{len(known_macs)} known device(s)...")
-        time.sleep(min(2, timeout))  # Simulate scan duration
-
-        if known_macs and config.MOCK_BLE_DEVICE_FOUND:
-            found = {
-                'mac':  known_macs[0],
-                'name': known_names[0] if known_names else 'MockPhone'
-            }
-            print(f"[MOCK BLE] Found: {found['name']} ({found['mac']})")
-            return found
-
-        if not config.MOCK_BLE_DEVICE_FOUND:
-            print("[MOCK BLE] No devices found "
-                  "(MOCK_BLE_DEVICE_FOUND=False → QR screen)")
-        else:
-            print("[MOCK BLE] No known devices in list")
-        return None
-
-    def wait_for_pairing(self):
-        """
-        Simulate phone scanning QR and sending credentials via BLE GATT.
-        In real mode: phone writes to SSID/PASSWORD/MAC characteristics.
-        ble_mac here is the PHONE's MAC - Pi saves this for future reconnect scans.
-        """
-        print("[MOCK BLE] Waiting for phone to connect and send credentials...")
-        time.sleep(3)
-        credentials = {
-            'ble_name':      'MockPhone-AB12',
-            'ble_mac':       'AA:BB:CC:DD:EE:FF',   # Phone's MAC (not Pi's)
-            'ssid':          'MockHotspot',
-            'password':      'mockpass123',
-            'phone_address': '192.168.43.1'
-        }
-        print(f"[MOCK BLE] Credentials received from {credentials['ble_name']}: "
-              f"SSID='{credentials['ssid']}'")
-        return credentials
-
-    def send_ip_to_phone(self, ip_address):
-        """
-        In real mode: Pi writes IP to GATT IP characteristic.
-        Phone reads it → saves for WiFi comms.
-        """
-        print(f"[MOCK BLE] Pi IP sent to phone: {ip_address}")
-        return True
-
-    def notify_enable_hotspot(self):
-        """
-        In real mode: Pi writes to GATT STATUS characteristic.
-        Phone app receives notification → shows "Enable hotspot" alert.
-        Mock: just logs it.
-        """
-        print("[MOCK BLE] ← Notified phone via BLE: please enable your hotspot")
-        return True
-
-    def stop(self):
-        print("[MOCK BLE] BLE advertising/connection stopped")
-
-    # ── WiFi / Hotspot ───────────────────────────────────
-
-    def connect(self, ssid, password=None):
-        """
-        Simulate hotspot connect via nmcli.
-        password=None → nmcli uses saved credentials (reconnect flow).
-        password=str  → new credentials (fresh pair flow).
-        Respects config.MOCK_HOTSPOT_ON.
-        """
-        if password:
-            print(f"[MOCK WIFI] Connecting to hotspot: '{ssid}' "
-                  f"(new credentials)...")
-        else:
-            print(f"[MOCK WIFI] Connecting to hotspot: '{ssid}' "
-                  f"(saved credentials)...")
-        time.sleep(1.5)  # Simulate nmcli delay
-
-        if config.MOCK_HOTSPOT_ON:
-            self.mode = 'wifi'
-            print(f"[MOCK WIFI] Connected to '{ssid}' ✓")
-            return True
-        else:
-            print(f"[MOCK WIFI] Hotspot '{ssid}' not reachable "
-                  f"(MOCK_HOTSPOT_ON=False)")
-            return False
-
-    def get_local_ip(self):
-        ip = '192.168.43.100'
-        print(f"[MOCK WIFI] Local IP: {ip}")
-        return ip
-
-    def start_server(self):
-        print("[MOCK WIFI] Flask server started on :8765")
-
-    def send_image(self, image_path):
-        print(f"[MOCK WIFI] Sending image: {image_path}")
-        time.sleep(0.5)
-        print("[MOCK WIFI] Image sent ✓")
-        return True
-
-    def send_file(self, file_path):
-        print(f"[MOCK WIFI] Sending CSV: {file_path}")
-        time.sleep(0.3)
-        print("[MOCK WIFI] CSV sent ✓")
-        return True
-
-    def wait_for_message(self, message_type):
-        print(f"[MOCK WIFI] Waiting for {message_type} from phone...")
-        time.sleep(2)
-
-        if message_type == 'cnn_result':
-            result = {
-                'food_type':  random.choice(['Fish', 'Chicken', 'Beef', 'Pork']),
-                'sensors':    ['MQ2', 'MQ3', 'MQ135'],
-                'confidence': round(random.uniform(80, 99), 1)
-            }
-            print(f"[MOCK WIFI] CNN result: {result['food_type']} "
-                  f"({result['confidence']}%)")
-            return result
-
-        if message_type == 'ml_result':
-            result = {
-                'status':     random.choice(['Fresh', 'Moderate', 'Spoiled']),
-                'confidence': round(random.uniform(75, 99), 1),
-                'food_type':  'Unknown',
-                'details':    'Mock ML result'
-            }
-            print(f"[MOCK WIFI] ML result: {result['status']} "
-                  f"({result['confidence']}%)")
-            return result
-
-        return None
+CSV_COLUMNS = [
+    'MQ135_mean','MQ135_std','MQ135_max',
+    'MQ136_mean','MQ136_std','MQ136_max',
+    'MQ2_mean',  'MQ2_std',  'MQ2_max',
+    'MQ3_mean',  'MQ3_std',  'MQ3_max',
+    'MQ4_mean',  'MQ4_std',  'MQ4_max',
+    'MQ5_mean',  'MQ5_std',  'MQ5_max',
+    'MQ6_mean',  'MQ6_std',  'MQ6_max',
+    'MQ8_mean',  'MQ8_std',  'MQ8_max',
+    'MQ9_mean',  'MQ9_std',  'MQ9_max',
+    'Humidity_mean',    'Humidity_std',    'Humidity_max',
+    'Temperature_mean', 'Temperature_std', 'Temperature_max',
+]
 
 
-class MockCameraManager:
+class SensorManager:
+
+    def __init__(self):
+        self._priming_start = None
+        self._spi           = None
+        self._dht           = None
 
     def initialize(self):
-        print("[MOCK CAM] Initialized")
-
-    def start_preview(self):
-        print("[MOCK CAM] Preview started")
-
-    def stop_preview(self):
-        print("[MOCK CAM] Preview stopped")
-
-    def get_preview_texture(self):
-        # Returns None - capture screen handles this gracefully
-        return None
-
-    def capture_image(self):
-        import os
-        from datetime import datetime
-        base_dir     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        captures_dir = os.path.join(base_dir, 'captures')
-        os.makedirs(captures_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(captures_dir, f"mock_capture_{timestamp}.jpg")
-        open(path, 'w').close()   # Empty placeholder file
-        print(f"[MOCK CAM] Captured: {path}")
-        return path
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(MOSFET_PIN, GPIO.OUT, initial=GPIO.LOW)
+        GPIO.setup(CS_MCP1,    GPIO.OUT, initial=GPIO.HIGH)
+        GPIO.setup(CS_MCP2,    GPIO.OUT, initial=GPIO.HIGH)
+        self._spi = spidev.SpiDev()
+        self._spi.open(0, 0)
+        self._spi.max_speed_hz = 1_350_000
+        self._spi.mode = 0b00
+        self._dht = adafruit_dht.DHT11(getattr(board, f'D{DHT_PIN_NUM}'))
+        print("[SENSORS] Initialized — MOSFET off")
 
     def cleanup(self):
-        print("[MOCK CAM] Cleanup")
+        self._mosfet_off()
+        if self._spi:
+            try: self._spi.close()
+            except Exception: pass
+        if self._dht:
+            try: self._dht.exit()
+            except Exception: pass
+        try: GPIO.cleanup()
+        except Exception: pass
+        print("[SENSORS] Cleanup done")
 
-
-class MockSensorManager:
-
-    def initialize(self):
-        print("[MOCK SENSORS] Initialized")
+    # ── Warmup ────────────────────────────────────────────────────────────────
 
     def start_priming(self):
-        print("[MOCK SENSORS] Priming started (mock - instant ready)")
+        if self._priming_start is None:
+            GPIO.output(MOSFET_PIN, GPIO.HIGH)
+            self._priming_start = time.time()
+            print(f"[SENSORS] MOSFET ON — warming up {WARMUP_SECS}s")
 
     def are_ready(self):
-        return True  # Mock sensors always ready instantly
+        if self._priming_start is None:
+            return False
+        return (time.time() - self._priming_start) >= WARMUP_SECS
 
-    def read_all_data(self, sensor_list):
-        data = {
-            'temperature': round(random.uniform(20, 35), 1),
-            'humidity':    round(random.uniform(40, 80), 1),
-            'sensors':     {}
-        }
-        for sensor in sensor_list:
-            data['sensors'][sensor] = round(random.uniform(100, 900), 2)
-        print(f"[MOCK SENSORS] Read: temp={data['temperature']}°C  "
-              f"hum={data['humidity']}%  "
-              f"VOC={data['sensors']}")
-        return data
+    def warmup_remaining(self):
+        if self._priming_start is None:
+            return float(WARMUP_SECS)
+        return max(0.0, WARMUP_SECS - (time.time() - self._priming_start))
+
+    def _mosfet_off(self):
+        try:
+            GPIO.output(MOSFET_PIN, GPIO.LOW)
+            self._priming_start = None
+            print("[SENSORS] MOSFET OFF")
+        except Exception:
+            pass
+
+    # ── ADC / SPI ─────────────────────────────────────────────────────────────
+
+    def _read_adc(self, cs_pin, channel):
+        GPIO.output(cs_pin, GPIO.LOW)
+        cmd    = [1, (8 + channel) << 4, 0]
+        result = self._spi.xfer2(cmd)
+        GPIO.output(cs_pin, GPIO.HIGH)
+        return ((result[1] & 3) << 8) | result[2]
+
+    def _adc_to_rs(self, adc_raw):
+        # V_pin = adc/1023 × VREF
+        # V_ao  = V_pin × 3          (undo 20k/10k divider)
+        # RS    = RL × (VCC - V_ao) / V_ao
+        if adc_raw <= 0:
+            return float('nan')
+        v_pin = (adc_raw / 1023.0) * VREF
+        v_ao  = v_pin * DIVIDER_GAIN
+        if v_ao <= 0.0 or v_ao >= VCC_MQ:
+            return float('nan')
+        return RL * (VCC_MQ - v_ao) / v_ao
+
+    # ── DHT11 ─────────────────────────────────────────────────────────────────
+
+    def _read_dht(self):
+        for _ in range(3):
+            try:
+                t = self._dht.temperature
+                h = self._dht.humidity
+                if t is not None and h is not None:
+                    return float(t), float(h)
+            except RuntimeError:
+                time.sleep(0.5)
+        print("[SENSORS] DHT11 failed after 3 retries")
+        return None, None
+
+    # ── Main read ─────────────────────────────────────────────────────────────
+
+    def read_all_data(self, sensor_list, progress_cb=None):
+        remaining = self.warmup_remaining()
+        if remaining > 0:
+            print(f"[SENSORS] Warmup not done — waiting {remaining:.1f}s")
+            time.sleep(remaining)
+
+        raw = {s: [] for s in MCP1_CHANNELS + MCP2_CHANNELS + ['Temperature', 'Humidity']}
+
+        print(f"[SENSORS] Sampling {N_SAMPLES} × {SAMPLE_DELAY}s")
+
+        for i in range(N_SAMPLES):
+            for ch, name in enumerate(MCP1_CHANNELS):
+                raw[name].append(self._adc_to_rs(self._read_adc(CS_MCP1, ch)))
+            raw['MQ136'].append(self._adc_to_rs(self._read_adc(CS_MCP2, 0)))
+            t, h = self._read_dht()
+            if t is not None:
+                raw['Temperature'].append(t)
+                raw['Humidity'].append(h)
+            if progress_cb:
+                progress_cb(i + 1, N_SAMPLES)
+            if i < N_SAMPLES - 1:
+                time.sleep(SAMPLE_DELAY)
+
+        self._mosfet_off()
+
+        features = {}
+        for sensor, values in raw.items():
+            valid = [v for v in values
+                     if v is not None and not (isinstance(v, float) and math.isnan(v))]
+            if not valid:
+                print(f"[SENSORS] No valid data for {sensor} — using 0")
+                valid = [0.0]
+            n    = len(valid)
+            mean = sum(valid) / n
+            std  = math.sqrt(sum((x - mean) ** 2 for x in valid) / n)
+            features[f'{sensor}_mean'] = round(mean, 4)
+            features[f'{sensor}_std']  = round(std,  4)
+            features[f'{sensor}_max']  = round(max(valid), 4)
+
+        print(f"[SENSORS] Done — {len(features)} features computed")
+        return {'raw_samples': raw, 'features': features}
+
+    # ── CSV ───────────────────────────────────────────────────────────────────
 
     def generate_csv(self, data):
-        import os
-        from datetime import datetime
-        base_dir  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        data_dir  = os.path.join(base_dir, 'data')
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_dir = os.path.join(base_dir, 'data')
         os.makedirs(data_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(data_dir, f"sensors_{timestamp}.csv")
-        with open(path, 'w') as f:
-            f.write("timestamp,temperature,humidity")
-            for s in data.get('sensors', {}):
-                f.write(f",{s}")
-            f.write("\n")
-            f.write(f"{timestamp},{data['temperature']},{data['humidity']}")
-            for v in data.get('sensors', {}).values():
-                f.write(f",{v}")
-            f.write("\n")
-        print(f"[MOCK SENSORS] CSV saved: {path}")
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        path      = os.path.join(data_dir, f'sensors_{timestamp}.csv')
+        features  = data.get('features', {})
+        with open(path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(CSV_COLUMNS)
+            writer.writerow([f"{features.get(col, 0.0):.4f}" for col in CSV_COLUMNS])
+        print(f"[SENSORS] CSV saved: {os.path.basename(path)}")
         return path
-
-    def cleanup(self):
-        print("[MOCK SENSORS] Cleanup")

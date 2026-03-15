@@ -3,8 +3,8 @@ import os
 # ============================================
 # HARDWARE CONFIGURATION
 # ============================================
-USE_REAL_SENSORS  = False
-USE_REAL_DHT11    = False
+USE_REAL_SENSORS  = True
+USE_REAL_DHT11    = True
 USE_REAL_CAMERA   = True
 USE_REAL_NETWORK  = True
 SHOW_RESET_BUTTON = True
@@ -14,11 +14,11 @@ SHOW_RESET_BUTTON = True
 
 # True  → BLE scan finds the phone (normal boot)
 # False → BLE scan finds nothing  → QR screen shown
-MOCK_BLE_DEVICE_FOUND = True
+MOCK_BLE_DEVICE_FOUND = False
 
 # True  → WiFi/hotspot connect succeeds
 # False → hotspot is off → triggers retry/prompt flow
-MOCK_HOTSPOT_ON = True
+MOCK_HOTSPOT_ON = False
 
 # ============================================
 # Auto-detection
