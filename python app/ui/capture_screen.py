@@ -1,4 +1,3 @@
-import threading
 from kivy.uix.screenmanager import Screen
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -13,7 +12,8 @@ class CaptureScreen(Screen):
         super().__init__(**kwargs)
         self.controller         = None
         self.preview_event      = None
-        self._preview_scheduled = False  # Guard: prevents double start on FadeTransition
+        self._preview_scheduled = False
+        self._ready_poll        = None   # polls camera until preview_active=True
         self._build_ui()
 
     def _build_ui(self):
@@ -68,44 +68,63 @@ class CaptureScreen(Screen):
         layout.add_widget(self.status_label)
         self.add_widget(layout)
 
-    # ── Lifecycle ──────────────────────────────────────
+    # ── Lifecycle ──────────────────────────────────────────────────────────────
 
     def on_enter(self):
-        # Always reset button — fixes stuck state when returning from result screen
         self.enable_capture()
-
         if not self._preview_scheduled:
             self._preview_scheduled = True
             Clock.schedule_once(lambda dt: self.start_preview(), 0.3)
 
     def on_leave(self):
-        self._preview_scheduled = False  # Reset so next on_enter re-arms
+        self._preview_scheduled = False
+        self._stop_ready_poll()
         self.stop_preview()
 
-    # ── Camera Preview ─────────────────────────────────
+    # ── Camera Preview ─────────────────────────────────────────────────────────
 
     def start_preview(self):
+        if not self.controller:
+            return
+
+        # Stop any existing preview/poll cleanly
+        self._stop_ready_poll()
         if self.preview_event:
             self.preview_event.cancel()
             self.preview_event = None
 
-        if not self.controller:
-            return
+        self.status_label.text  = 'Starting camera...'
+        self.status_label.color = (1.0, 0.75, 0.3, 1)
 
-        try:
-            self.controller.dm.hardware.start_camera_preview()
-            self.preview_event = Clock.schedule_interval(
-                self.update_preview, 1.0 / 10  # 10 FPS — fine for Pi Zero 2W
-            )
+        # Kick off the background camera start (non-blocking)
+        self.controller.dm.hardware.start_camera_preview()
+
+        # Poll until preview_active=True, then start the frame clock
+        self._ready_poll = Clock.schedule_interval(self._poll_camera_ready, 0.2)
+
+    def _poll_camera_ready(self, dt):
+        if not self.controller:
+            return False
+        cam = self.controller.dm.hardware.camera   # CameraManager instance
+        if cam.is_preview_ready():
+            self._stop_ready_poll()
             self.status_label.text  = 'Position food item in frame'
             self.status_label.color = (0.7, 0.7, 0.7, 1)
-            print("[CAPTURE] Preview started")
-        except Exception as e:
-            import traceback
-            print(f"[CAPTURE] Camera preview error: {e}")
-            traceback.print_exc()
-            self.status_label.text  = 'Camera unavailable'
+            self.preview_event = Clock.schedule_interval(self.update_preview, 1.0 / 10)
+            print("[CAPTURE] Camera ready — preview clock started")
+            return False
+        # Still starting — check if it failed (both flags cleared = error)
+        if not cam._starting and not cam.preview_active:
+            self._stop_ready_poll()
+            self.status_label.text  = 'Camera unavailable — tap Back and retry'
             self.status_label.color = (1, 0.3, 0.3, 1)
+            print("[CAPTURE] Camera failed to start")
+            return False
+
+    def _stop_ready_poll(self):
+        if self._ready_poll:
+            self._ready_poll.cancel()
+            self._ready_poll = None
 
     def update_preview(self, dt):
         if not self.controller:
@@ -115,7 +134,7 @@ class CaptureScreen(Screen):
             if texture:
                 self.preview.texture = texture
         except Exception:
-            pass  # Frame drop is acceptable
+            pass
 
     def stop_preview(self):
         if self.preview_event:
@@ -128,26 +147,26 @@ class CaptureScreen(Screen):
             except Exception as e:
                 print(f"[CAPTURE] Stop preview error: {e}")
 
-    # ── Button Handlers ────────────────────────────────
+    # ── Button Handlers ────────────────────────────────────────────────────────
 
     def on_capture(self, instance):
         if not self.controller:
             return
-        # Defer 1 frame so Kivy redraws button release before blocking work starts
         Clock.schedule_once(lambda dt: self._trigger_capture(), 0.1)
 
     def _trigger_capture(self):
+        self._stop_ready_poll()
         self.stop_preview()
         self.status_label.text  = 'Capturing...'
         self.status_label.color = (0.9, 0.9, 0.9, 1)
-        # controller.capture_image() is already threaded — call it directly
         self.controller.capture_image()
 
     def on_back(self, instance):
+        self._stop_ready_poll()
         self.stop_preview()
         self.manager.current = 'home'
 
-    # ── State Control ──────────────────────────────────
+    # ── State Control ──────────────────────────────────────────────────────────
 
     def disable_capture(self):
         self.capture_btn.disabled = True

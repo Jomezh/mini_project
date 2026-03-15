@@ -11,38 +11,25 @@ if config.IS_RASPBERRY_PI:
     import board
     import adafruit_dht
 
-# ── Pin / circuit constants ───────────────────────────────────────────────────
 MOSFET_PIN   = 26
-CS_MCP1      = 5       # GPIO 5 → MCP3008 #1  (MQ2,MQ3,MQ4,MQ5,MQ6,MQ8,MQ9,MQ135)
-CS_MCP2      = 6       # GPIO 6 → MCP3008 #2  (MQ136)
+CS_MCP1      = 5
+CS_MCP2      = 6
 DHT_PIN_NUM  = 4
 
-VREF         = 3.3     # MCP3008 reference voltage
-VCC_MQ       = 5.0     # MQ sensor supply voltage
-RL_KΩ        = 1.0     # Load resistor in kΩ — training data uses kΩ unit
-R_UPPER      = 20000.0 # Voltage-divider top    (MQ AO → MCP pin)
-R_LOWER      = 10000.0 # Voltage-divider bottom (MCP pin → GND)
+VREF         = 3.3
+VCC_MQ       = 5.0
+RL_KΩ        = 1.0
+R_UPPER      = 20000.0
+R_LOWER      = 10000.0
 DIVIDER_GAIN = (R_UPPER + R_LOWER) / R_LOWER   # 3.0
-#
-#  MQ AO ──[20kΩ]──┬── MCP3008 CHx
-#                  │
-#               [10kΩ]
-#                  │
-#                 GND
-#
-#  V_ao  = V_pin × 3          (undo divider)
-#  RS_kΩ = (VCC - V_ao) / V_ao × RL_kΩ    → result in kΩ, matches training data
 
-# ── Timing ────────────────────────────────────────────────────────────────────
 WARMUP_SECS  = 30
 N_SAMPLES    = 30
 SAMPLE_DELAY = 1.0
 
-# ── Channel maps ──────────────────────────────────────────────────────────────
 MCP1_CHANNELS = ['MQ2','MQ3','MQ4','MQ5','MQ6','MQ8','MQ9','MQ135']
 MCP2_CHANNELS = ['MQ136']
 
-# ── CSV columns — must match model_feature_33.pkl exactly ────────────────────
 CSV_COLUMNS = [
     'MQ135_mean','MQ135_std','MQ135_max',
     'MQ136_mean','MQ136_std','MQ136_max',
@@ -62,8 +49,8 @@ class SensorManager:
 
     def __init__(self):
         self._priming_start = None
-        self._spi           = None
         self._dht           = None
+        # ↑ No _spi here — opened fresh per session to avoid CE0/display conflict
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -72,24 +59,62 @@ class SensorManager:
         GPIO.setup(MOSFET_PIN, GPIO.OUT, initial=GPIO.LOW)
         GPIO.setup(CS_MCP1,    GPIO.OUT, initial=GPIO.HIGH)
         GPIO.setup(CS_MCP2,    GPIO.OUT, initial=GPIO.HIGH)
-        self._spi = spidev.SpiDev()
-        self._spi.open(0, 0)
-        self._spi.max_speed_hz = 1_350_000
-        self._spi.mode = 0b00
         self._dht = adafruit_dht.DHT11(getattr(board, f'D{DHT_PIN_NUM}'))
-        print("[SENSORS] Initialized — MOSFET off")
+        # SPI is NOT opened here — display/touch own CE0/CE1 permanently.
+        # We open a fresh handle only during sensor reading, then close it.
+        print("[SENSORS] Initialized — MOSFET off, SPI deferred")
 
     def cleanup(self):
         self._mosfet_off()
-        if self._spi:
-            try: self._spi.close()
-            except Exception: pass
         if self._dht:
             try: self._dht.exit()
             except Exception: pass
         try: GPIO.cleanup()
         except Exception: pass
         print("[SENSORS] Cleanup done")
+
+    # ── SPI — open/close per session ──────────────────────────────────────────
+
+    def _open_spi(self):
+        """Open a fresh SPI handle for one reading session.
+
+        no_cs=True: hardware CE0/CE1 are owned by display/touch — we never
+        assert them. CS lines (GPIO5, GPIO6) are driven manually.
+        """
+        spi = spidev.SpiDev()
+        spi.open(0, 0)
+        spi.no_cs         = True
+        spi.max_speed_hz  = 1_350_000
+        spi.mode          = 0b00
+        return spi
+
+    def _close_spi(self, spi):
+        try: spi.close()
+        except Exception: pass
+
+    # ── ADC read ──────────────────────────────────────────────────────────────
+
+    def _read_adc(self, spi, cs_pin, channel):
+        GPIO.output(cs_pin, GPIO.LOW)
+        cmd    = [1, (8 + channel) << 4, 0]
+        result = spi.xfer2(cmd)
+        GPIO.output(cs_pin, GPIO.HIGH)
+        return ((result[1] & 3) << 8) | result[2]
+
+    def _adc_to_rs(self, adc_raw):
+        """ADC → RS in kΩ, matching training data convention.
+
+        V_pin = ADC / 1023 × VREF
+        V_ao  = V_pin × 3          (undo 20k/10k divider)
+        RS_kΩ = (VCC - V_ao) / V_ao × RL_kΩ
+        """
+        if adc_raw <= 0:
+            return float('nan')
+        v_pin = (adc_raw / 1023.0) * VREF
+        v_ao  = v_pin * DIVIDER_GAIN
+        if v_ao <= 0.0 or v_ao >= VCC_MQ:
+            return float('nan')
+        return (VCC_MQ - v_ao) / v_ao * RL_KΩ
 
     # ── Warmup ────────────────────────────────────────────────────────────────
 
@@ -117,32 +142,6 @@ class SensorManager:
         except Exception:
             pass
 
-    # ── ADC / SPI ─────────────────────────────────────────────────────────────
-
-    def _read_adc(self, cs_pin, channel):
-        GPIO.output(cs_pin, GPIO.LOW)
-        cmd    = [1, (8 + channel) << 4, 0]
-        result = self._spi.xfer2(cmd)
-        GPIO.output(cs_pin, GPIO.HIGH)
-        return ((result[1] & 3) << 8) | result[2]
-
-    def _adc_to_rs(self, adc_raw):
-        """Convert raw ADC → sensor resistance RS in kΩ.
-
-        Matches training data convention exactly:
-          V_pin = ADC / 1023 × VREF        (MCP3008 pin voltage, after divider)
-          V_ao  = V_pin × DIVIDER_GAIN     (undo 20k/10k divider → real MQ AO voltage)
-          RS_kΩ = (VCC_MQ − V_ao) / V_ao × RL_kΩ
-        Result in kΩ — identical scale to training CSV (values ~10–45 range).
-        """
-        if adc_raw <= 0:
-            return float('nan')
-        v_pin = (adc_raw / 1023.0) * VREF
-        v_ao  = v_pin * DIVIDER_GAIN
-        if v_ao <= 0.0 or v_ao >= VCC_MQ:
-            return float('nan')
-        return (VCC_MQ - v_ao) / v_ao * RL_KΩ
-
     # ── DHT11 ─────────────────────────────────────────────────────────────────
 
     def _read_dht(self):
@@ -167,20 +166,26 @@ class SensorManager:
 
         raw = {s: [] for s in MCP1_CHANNELS + MCP2_CHANNELS + ['Temperature', 'Humidity']}
 
-        print(f"[SENSORS] Sampling {N_SAMPLES} × {SAMPLE_DELAY}s")
+        print(f"[SENSORS] Opening SPI for reading session")
+        spi = self._open_spi()
 
-        for i in range(N_SAMPLES):
-            for ch, name in enumerate(MCP1_CHANNELS):
-                raw[name].append(self._adc_to_rs(self._read_adc(CS_MCP1, ch)))
-            raw['MQ136'].append(self._adc_to_rs(self._read_adc(CS_MCP2, 0)))
-            t, h = self._read_dht()
-            if t is not None:
-                raw['Temperature'].append(t)
-                raw['Humidity'].append(h)
-            if progress_cb:
-                progress_cb(i + 1, N_SAMPLES)
-            if i < N_SAMPLES - 1:
-                time.sleep(SAMPLE_DELAY)
+        try:
+            print(f"[SENSORS] Sampling {N_SAMPLES} × {SAMPLE_DELAY}s")
+            for i in range(N_SAMPLES):
+                for ch, name in enumerate(MCP1_CHANNELS):
+                    raw[name].append(self._adc_to_rs(self._read_adc(spi, CS_MCP1, ch)))
+                raw['MQ136'].append(self._adc_to_rs(self._read_adc(spi, CS_MCP2, 0)))
+                t, h = self._read_dht()
+                if t is not None:
+                    raw['Temperature'].append(t)
+                    raw['Humidity'].append(h)
+                if progress_cb:
+                    progress_cb(i + 1, N_SAMPLES)
+                if i < N_SAMPLES - 1:
+                    time.sleep(SAMPLE_DELAY)
+        finally:
+            self._close_spi(spi)
+            print("[SENSORS] SPI closed")
 
         self._mosfet_off()
 
