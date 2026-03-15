@@ -28,7 +28,7 @@ class CameraManager:
         self._initialized    = False
         self._capturing      = False
         self._starting       = False
-        self._last_error     = None   # stores last exception for debugging
+        self._last_error     = None
 
     def initialize(self):
         if not HAS_CAMERA:
@@ -45,8 +45,8 @@ class CameraManager:
         if self.preview_active or self._starting:
             print("[CAMERA] Preview already active/starting — skipped")
             return
-        self._starting    = True
-        self._last_error  = None
+        self._starting   = True
+        self._last_error = None
         threading.Thread(target=self._start_preview_worker, daemon=True).start()
 
     def _start_preview_worker(self):
@@ -98,11 +98,13 @@ class CameraManager:
             return None
         try:
             with self._lock:
-                frame     = self.camera.capture_array("main")
-                h, w, _   = frame.shape
-                frame_rgb = frame[:, :, ::-1].copy()   # BGR → RGB
-                flipped   = frame_rgb[::-1, :, :]      # vertical flip for Kivy origin
-                texture   = Texture.create(size=(w, h), colorfmt='bgr')
+                frame   = self.camera.capture_array("main")
+                h, w, _ = frame.shape
+                # RGB888 from picamera2 is BGR in memory.
+                # No channel flip — pass BGR directly to Kivy.
+                # Only flip vertically for Kivy's bottom-left origin.
+                flipped = frame[::-1, :, :].copy()
+                texture = Texture.create(size=(w, h), colorfmt='bgr')
                 texture.blit_buffer(
                     flipped.tobytes(),
                     colorfmt='bgr', bufferfmt='ubyte'
@@ -173,4 +175,3 @@ class CameraManager:
         self.stop_preview()
         self._initialized = False
         print("[CAMERA] Cleanup done")
-
