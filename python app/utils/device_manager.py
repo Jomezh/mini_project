@@ -1,7 +1,6 @@
 import os
 import json
 import uuid
-import subprocess
 import time
 import config
 
@@ -15,11 +14,11 @@ class DeviceManager:
     )
 
     def __init__(self):
-        self.device_id = self._load_or_generate_device_id()
+        self.device_id   = self._load_or_generate_device_id()
         self.config_data = self._load_config()
-        self.hardware = HardwareManager()
-        self.network  = NetworkManager(self.device_id)
-        self.heartbeat = None
+        self.hardware    = HardwareManager()
+        self.network     = NetworkManager(self.device_id)
+        self.heartbeat   = None
 
         from utils.cleanup_manager import CleanupManager
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -74,10 +73,10 @@ class DeviceManager:
         known   = self.get_known_devices()
         ble_mac = credentials.get('ble_mac', '')
         entry = {
-            'ble_name':      credentials.get('ble_name', ''),
-            'ble_mac':       ble_mac,
-            'ssid':          credentials.get('ssid', ''),
-            'phone_address': credentials.get('phone_address', ''),
+            'ble_name':       credentials.get('ble_name', ''),
+            'ble_mac':        ble_mac,
+            'ssid':           credentials.get('ssid', ''),
+            'phone_address':  credentials.get('phone_address', ''),
             'last_connected': datetime.now().isoformat()
         }
         existing = next((d for d in known if d.get('ble_mac') == ble_mac), None)
@@ -126,8 +125,7 @@ class DeviceManager:
             return None
         known_macs  = {d['ble_mac']: d for d in known}
         known_names = {d['ble_name']: d for d in known}
-        print(f"[DEVICE] Scanning for {len(known)} known device(s)... "
-              f"({'mock' if not config.USE_REAL_NETWORK else 'real'})")
+        print(f"[DEVICE] Scanning for {len(known)} known device(s)...")
         found = self.network.scan_for_devices(
             known_macs  = list(known_macs.keys()),
             known_names = list(known_names.keys()),
@@ -150,8 +148,6 @@ class DeviceManager:
             return
         phone_ip = self.network.wifi.get_phone_ip()
         if phone_ip:
-            print(f"[DEVICE] Heartbeat scheduled → phone at {phone_ip} "
-                  f"(15s grace period)")
             import threading
             threading.Timer(
                 15.0,
@@ -249,14 +245,14 @@ class HardwareManager:
     def are_voc_sensors_ready(self):
         return self.sensors.are_ready()
 
-    def warmup_remaining(self):                          # ← new
+    def warmup_remaining(self):
         return self.sensors.warmup_remaining()
 
-    def read_all_sensor_data(self, sl, progress_cb=None):  # ← updated
+    def read_all_sensor_data(self, sl, progress_cb=None):
         return self.sensors.read_all_data(sl, progress_cb=progress_cb)
 
-    def generate_sensor_csv(self, d):
-        return self.sensors.generate_csv(d)
+    def generate_sensor_csv(self, d, sensor_list):          # ← updated
+        return self.sensors.generate_csv(d, sensor_list)
 
     def start_camera_preview(self):
         self.camera.start_preview()

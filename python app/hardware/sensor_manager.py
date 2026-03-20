@@ -29,24 +29,8 @@ SAMPLE_DELAY = 1.0
 
 MCP1_CHANNELS = ['MQ2','MQ3','MQ4','MQ5','MQ6','MQ8','MQ9','MQ135']
 MCP2_CHANNELS = ['MQ136']
+ALL_MQ        = MCP1_CHANNELS + MCP2_CHANNELS
 
-CSV_COLUMNS = [
-    'MQ135_mean','MQ135_std','MQ135_max',
-    'MQ136_mean','MQ136_std','MQ136_max',
-    'MQ2_mean',  'MQ2_std',  'MQ2_max',
-    'MQ3_mean',  'MQ3_std',  'MQ3_max',
-    'MQ4_mean',  'MQ4_std',  'MQ4_max',
-    'MQ5_mean',  'MQ5_std',  'MQ5_max',
-    'MQ6_mean',  'MQ6_std',  'MQ6_max',
-    'MQ8_mean',  'MQ8_std',  'MQ8_max',
-    'MQ9_mean',  'MQ9_std',  'MQ9_max',
-    'Humidity_mean',    'Humidity_std',    'Humidity_max',
-    'Temperature_mean', 'Temperature_std', 'Temperature_max',
-]
-
-# Tried in order — first existing node wins.
-# Display/touch typically consume spidev0.0 + spidev0.1,
-# so SPI1 (spidev1.0) is the safe fallback for MCP3008s.
 _SPI_CANDIDATES = [(0, 1), (1, 0), (0, 0)]
 
 
@@ -55,7 +39,7 @@ class SensorManager:
     def __init__(self):
         self._priming_start = None
         self._dht           = None
-        self._spi_bus       = None   # detected in initialize()
+        self._spi_bus       = None
         self._spi_dev       = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -66,8 +50,6 @@ class SensorManager:
         GPIO.setup(CS_MCP1,    GPIO.OUT, initial=GPIO.HIGH)
         GPIO.setup(CS_MCP2,    GPIO.OUT, initial=GPIO.HIGH)
         self._dht = adafruit_dht.DHT11(getattr(board, f'D{DHT_PIN_NUM}'))
-
-        # Detect which spidev node is free (display may own some)
         self._spi_bus, self._spi_dev = self._detect_spi()
         print(f"[SENSORS] Initialized — will use /dev/spidev{self._spi_bus}.{self._spi_dev}")
 
@@ -77,12 +59,10 @@ class SensorManager:
             if os.path.exists(path):
                 print(f"[SENSORS] Found SPI device: {path}")
                 return bus, dev
-        # Nothing found — print helpful message
         available = [f for f in os.listdir('/dev') if f.startswith('spi')]
         raise OSError(
             f"No usable spidev found. Available: {available or 'none'}.\n"
-            f"Enable SPI1 by adding 'dtoverlay=spi1-1cs' to /boot/config.txt "
-            f"and reboot, or check your display overlay config."
+            f"Enable SPI1 by adding 'dtoverlay=spi1-1cs' to /boot/config.txt and reboot."
         )
 
     def cleanup(self):
@@ -94,12 +74,9 @@ class SensorManager:
         except Exception: pass
         print("[SENSORS] Cleanup done")
 
-    # ── SPI — open/close per session ──────────────────────────────────────────
+    # ── SPI ───────────────────────────────────────────────────────────────────
 
     def _open_spi(self):
-        """Open a fresh SPI handle for one reading session.
-        no_cs=True: CE pins owned by display/touch — we drive CS manually.
-        """
         spi = spidev.SpiDev()
         spi.open(self._spi_bus, self._spi_dev)
         spi.no_cs        = True
@@ -122,7 +99,6 @@ class SensorManager:
 
     def _adc_to_rs(self, adc_raw):
         """ADC → RS in kΩ matching training data convention.
-
         V_pin = ADC / 1023 × VREF
         V_ao  = V_pin × 3          (undo 20k/10k divider)
         RS_kΩ = (VCC - V_ao) / V_ao × RL_kΩ
@@ -183,17 +159,26 @@ class SensorManager:
             print(f"[SENSORS] Warmup not done — waiting {remaining:.1f}s")
             time.sleep(remaining)
 
-        raw = {s: [] for s in MCP1_CHANNELS + MCP2_CHANNELS + ['Temperature', 'Humidity']}
+        # Only read MQ sensors the app requested — DHT11 always included
+        mq_to_read = [s for s in sensor_list if s in ALL_MQ]
+        raw        = {s: [] for s in mq_to_read + ['Temperature', 'Humidity']}
 
         print(f"[SENSORS] Opening SPI /dev/spidev{self._spi_bus}.{self._spi_dev}")
+        print(f"[SENSORS] Reading sensors: {mq_to_read} + DHT11")
         spi = self._open_spi()
 
         try:
             print(f"[SENSORS] Sampling {N_SAMPLES} × {SAMPLE_DELAY}s")
             for i in range(N_SAMPLES):
                 for ch, name in enumerate(MCP1_CHANNELS):
-                    raw[name].append(self._adc_to_rs(self._read_adc(spi, CS_MCP1, ch)))
-                raw['MQ136'].append(self._adc_to_rs(self._read_adc(spi, CS_MCP2, 0)))
+                    if name in mq_to_read:
+                        raw[name].append(
+                            self._adc_to_rs(self._read_adc(spi, CS_MCP1, ch))
+                        )
+                if 'MQ136' in mq_to_read:
+                    raw['MQ136'].append(
+                        self._adc_to_rs(self._read_adc(spi, CS_MCP2, 0))
+                    )
                 t, h = self._read_dht()
                 if t is not None:
                     raw['Temperature'].append(t)
@@ -227,16 +212,32 @@ class SensorManager:
 
     # ── CSV ───────────────────────────────────────────────────────────────────
 
-    def generate_csv(self, data):
+    def generate_csv(self, data, sensor_list):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         data_dir = os.path.join(base_dir, 'data')
         os.makedirs(data_dir, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         path      = os.path.join(data_dir, f'sensors_{timestamp}.csv')
-        features  = data.get('features', {})
+
+        # MQ columns in app-defined order (matches RF model training order)
+        mq_sensors   = [s for s in sensor_list if s in ALL_MQ]
+        dynamic_cols = []
+        for sensor in mq_sensors:
+            dynamic_cols.append(f'{sensor}_mean')
+            dynamic_cols.append(f'{sensor}_std')
+            dynamic_cols.append(f'{sensor}_max')
+        # DHT11 always last — Humidity then Temperature
+        for stat in ['mean', 'std', 'max']:
+            dynamic_cols.append(f'Humidity_{stat}')
+        for stat in ['mean', 'std', 'max']:
+            dynamic_cols.append(f'Temperature_{stat}')
+
+        features = data.get('features', {})
         with open(path, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(CSV_COLUMNS)
-            writer.writerow([f"{features.get(col, 0.0):.4f}" for col in CSV_COLUMNS])
+            writer.writerow(dynamic_cols)
+            writer.writerow([f"{features.get(col, 0.0):.4f}" for col in dynamic_cols])
+
+        print(f"[SENSORS] CSV columns: {dynamic_cols}")
         print(f"[SENSORS] CSV saved: {os.path.basename(path)}")
         return path

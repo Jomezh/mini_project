@@ -79,7 +79,6 @@ class AppController:
                 )
         except Exception as e:
             import traceback
-            print(f"[CONTROLLER] !! Scan thread crash: {e}")
             traceback.print_exc()
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_qr(
@@ -100,7 +99,6 @@ class AppController:
             self.autoconnect_retry_logic(known_device)
         except Exception as e:
             import traceback
-            print(f"[CONTROLLER] !! WiFi connect thread crash: {e}")
             traceback.print_exc()
             err = str(e)
             Clock.schedule_once(
@@ -113,20 +111,14 @@ class AppController:
         ssid   = known_device['ssid']
         blemac = known_device['ble_mac']
         name   = known_device['ble_name']
-
         self._wifi_cancel.clear()
 
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             if self._wifi_cancel.is_set():
-                print("[CONTROLLER] Auto-connect cancelled")
                 return
-
-            print(f"[CONTROLLER] WiFi attempt {attempt}/{WIFI_RETRY_LIMIT} for {ssid}")
             self.dm.network.notify_enable_hotspot()
-
             wait         = WIFI_FIRST_HOTSPOT_WAIT if attempt == 1 else WIFI_RETRY_INTERVAL
             retries_left = WIFI_RETRY_LIMIT - attempt
-
             Clock.schedule_once(
                 lambda dt, a=attempt, rl=retries_left, w=wait:
                     self.sm.get_screen('pairing').show_hotspot_prompt(
@@ -134,21 +126,13 @@ class AppController:
                         retries_left=rl, retry_in=w
                     ), 0
             )
-
             cancelled = self._wifi_cancel.wait(timeout=wait)
-            if cancelled:
-                print("[CONTROLLER] Auto-connect cancelled during wait")
+            if cancelled or self._wifi_cancel.is_set():
                 return
-            if self._wifi_cancel.is_set():
-                return
-
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_connecting(name), 0
             )
-
             wifiok = self.dm.network.connect_wifi(ssid, password=None)
-            print(f"[CONTROLLER] WiFi result: {wifiok}")
-
             if wifiok:
                 self._connection_time      = time.time()
                 self.current_connected_mac = blemac
@@ -158,7 +142,6 @@ class AppController:
                 self.dm.start_heartbeat_after_wifi(
                     on_disconnected=self.on_phone_disconnected
                 )
-                print("[CONTROLLER] Auto-connect success → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
 
@@ -208,7 +191,6 @@ class AppController:
                 )
         except Exception as e:
             import traceback
-            print(f"[CONTROLLER] !! Pairing wait crash: {e}")
             traceback.print_exc()
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_qr(
@@ -221,7 +203,6 @@ class AppController:
             self.ble_timeout_event.cancel()
             self.ble_timeout_event = None
         if self._pairing_in_progress:
-            print("[CONTROLLER] on_paired called twice — ignoring duplicate")
             return
         self._pairing_in_progress = True
         self.dm.save_pairing(credentials)
@@ -236,7 +217,6 @@ class AppController:
             self.new_pair_wifi_logic(credentials)
         except Exception as e:
             import traceback
-            print(f"[CONTROLLER] !! New pair WiFi crash: {e}")
             traceback.print_exc()
             self._pairing_in_progress = False
             err = str(e)
@@ -251,21 +231,15 @@ class AppController:
         password = credentials['password']
         blemac   = credentials.get('ble_mac', '')
         name     = credentials.get('ble_name', 'your phone')
-
         self._wifi_cancel.clear()
 
         for attempt in range(1, WIFI_RETRY_LIMIT + 1):
             if self._wifi_cancel.is_set():
-                print("[CONTROLLER] New pair cancelled")
                 self._pairing_in_progress = False
                 return
-
-            print(f"[CONTROLLER] New pair WiFi attempt {attempt}/{WIFI_RETRY_LIMIT}")
             self.dm.network.notify_enable_hotspot()
-
             wait         = WIFI_FIRST_HOTSPOT_WAIT if attempt == 1 else WIFI_RETRY_INTERVAL
             retries_left = WIFI_RETRY_LIMIT - attempt
-
             Clock.schedule_once(
                 lambda dt, a=attempt, rl=retries_left, w=wait:
                     self.sm.get_screen('pairing').show_hotspot_prompt(
@@ -273,45 +247,32 @@ class AppController:
                         retries_left=rl, retry_in=w
                     ), 0
             )
-
             cancelled = self._wifi_cancel.wait(timeout=wait)
-            if cancelled:
-                print("[CONTROLLER] New pair cancelled during wait")
+            if cancelled or self._wifi_cancel.is_set():
                 self._pairing_in_progress = False
                 return
-            if self._wifi_cancel.is_set():
-                self._pairing_in_progress = False
-                return
-
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_connecting(name), 0
             )
-
             wifiok = self.dm.network.connect_wifi(ssid, password)
-            print(f"[CONTROLLER] WiFi result: {wifiok}")
-
             if wifiok:
                 self._connection_time      = time.time()
                 self.current_connected_mac = blemac
                 self._wifi_connected       = True
                 self._current_ssid         = ssid
                 self.dm.update_last_connected(blemac)
-
                 pi_ip = self.dm.network.get_local_ip()
                 if pi_ip:
                     wifi_posted = self.dm.network.post_ip_via_wifi(pi_ip)
                     self.dm.network.send_ip_to_phone(pi_ip)
                     time.sleep(3 if wifi_posted else 8)
                 else:
-                    print("[CONTROLLER] !! Unexpected: no IP after connect()")
                     time.sleep(3)
-
                 self.dm.network.stop_ble()
                 self.dm.start_heartbeat_after_wifi(
                     on_disconnected=self.on_phone_disconnected
                 )
                 self._pairing_in_progress = False
-                print("[CONTROLLER] New pair complete → Home")
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
 
@@ -339,17 +300,13 @@ class AppController:
         self._wifi_connected       = False
         self._current_ssid         = None
         self._connection_time      = 0.0
-        self.sm.get_screen('pairing').show_qr()
         Clock.schedule_once(
             lambda dt: self.sm.get_screen('pairing').show_qr(), 0.1
         )
-        print("[CONTROLLER] All pairing data cleared")
 
     def forget_device(self):
         if self._wifi_connected and (time.time() - self._connection_time) < 5.0:
-            print("[CONTROLLER] forget_device within 5s of connect — ghost touch, ignoring")
             return
-
         if self.current_connected_mac:
             known = self.dm.get_known_devices()
             match = next(
@@ -366,20 +323,13 @@ class AppController:
             self._current_ssid         = None
             self._connection_time      = 0.0
             print(f"[CONTROLLER] Forgot device: {name}")
-        else:
-            print("[CONTROLLER] forget_device: no active device to forget")
-
         self.sm.current = 'pairing'
         Clock.schedule_once(lambda dt: self.start_pairing_screen(), 0.3)
 
     def on_phone_disconnected(self):
         if self._current_ssid and self.dm.network.is_connected_to(self._current_ssid):
-            print(
-                "[CONTROLLER] Heartbeat ping failed but WiFi still active — "
-                "suppressing reset (phone port 8080 not running)"
-            )
+            print("[CONTROLLER] Heartbeat ping failed but WiFi still active — suppressing reset")
             return
-
         name = 'phone'
         if self.current_connected_mac:
             known = self.dm.get_known_devices()
@@ -388,7 +338,6 @@ class AppController:
             )
             if match:
                 name = match['ble_name']
-
         print(f"[CONTROLLER] Phone disconnected ({name}) — returning to pairing")
         self.dm.network.stop()
         self.current_connected_mac = None
@@ -427,7 +376,6 @@ class AppController:
             self.capture_logic()
         except Exception as e:
             import traceback
-            print(f"[CONTROLLER] !! Capture thread crash: {e}")
             traceback.print_exc()
             err    = str(e)
             screen = self.sm.get_screen('capture')
@@ -445,7 +393,6 @@ class AppController:
             return
 
         self.current_test_data['image_path'] = image_path
-        print(f"[CONTROLLER] Image captured: {image_path}")
 
         import config
         if config.USE_REAL_NETWORK:
@@ -467,9 +414,9 @@ class AppController:
                 )
                 Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
         else:
-            print("[CONTROLLER] Mock — skipping CNN, using default sensors")
             self.current_test_data['food_type']       = 'Unknown'
-            self.current_test_data['sensors_to_read'] = ['MQ2', 'MQ3', 'MQ135']
+            self.current_test_data['sensors_to_read'] = ['MQ2','MQ3','MQ4','MQ5',
+                                                          'MQ6','MQ8','MQ9','MQ135','MQ136']
             self.delete_image(image_path)
             Clock.schedule_once(lambda dt: self.proceed_to_reading(), 0)
 
@@ -487,14 +434,11 @@ class AppController:
         if image_path:
             self.delete_image(image_path)
         self.current_test_data = {}
-        print("[CONTROLLER] CNN analysis cancelled by user")
         Clock.schedule_once(lambda dt: self.go_to_home(), 0)
 
     def wait_for_cnn_result(self):
         try:
-            result = self.dm.network.wait_for_cnn_result(
-                cancel_event=self._cnn_cancel
-            )
+            result = self.dm.network.wait_for_cnn_result(cancel_event=self._cnn_cancel)
             if self._cnn_cancel.is_set():
                 return
             if result:
@@ -530,7 +474,6 @@ class AppController:
         no_match_values = {'no_match', 'no match', 'unknown', 'none', '', 'not food'}
 
         if food_type in no_match_values:
-            print(f"[CONTROLLER] CNN returned no-match: {result}")
             image_path = self.current_test_data.get('image_path')
             if image_path:
                 self.delete_image(image_path)
@@ -544,7 +487,11 @@ class AppController:
             return
 
         self.current_test_data['food_type']       = result.get('food_type')
-        self.current_test_data['sensors_to_read'] = result.get('sensors')
+        # Filter out DHT11 from CNN sensor list — DHT11 is always read, not an ADC channel
+        sensors_raw = result.get('sensors', [])
+        self.current_test_data['sensors_to_read'] = [
+            s for s in sensors_raw if s != 'DHT11'
+        ]
         image_path = self.current_test_data.get('image_path')
         if image_path:
             self.delete_image(image_path)
@@ -554,7 +501,7 @@ class AppController:
         self.sm.current = 'reading'
         screen = self.sm.get_screen('reading')
         screen.set_sensors(self.current_test_data['sensors_to_read'])
-        screen.start_warmup_display(                    # ← updated
+        screen.start_warmup_display(
             lambda: self.dm.hardware.warmup_remaining(),
             total_secs=30
         )
@@ -572,13 +519,13 @@ class AppController:
         sensors     = self.current_test_data.get('sensors_to_read', [])
         reading_scr = self.sm.get_screen('reading')
 
-        def _progress(i, total):                        # ← updated
+        def _progress(i, total):
             Clock.schedule_once(
                 lambda dt: reading_scr.update_sample_progress(i, total), 0
             )
 
         all_data = self.dm.hardware.read_all_sensor_data(sensors, progress_cb=_progress)
-        csv_path = self.dm.hardware.generate_sensor_csv(all_data)
+        csv_path = self.dm.hardware.generate_sensor_csv(all_data, sensors)  # ← updated
 
         import config
         if config.USE_REAL_NETWORK:
