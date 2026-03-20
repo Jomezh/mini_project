@@ -5,12 +5,14 @@ import threading
 import os
 import re
 
+
 try:
     import netifaces
     HAS_NETIFACES = True
 except ImportError:
     HAS_NETIFACES = False
     print("[WIFI] netifaces not installed — pip install netifaces")
+
 
 try:
     import requests as reqlib
@@ -25,20 +27,21 @@ class WiFiManager:
     Connects to phone's WiFi hotspot via nmcli.
     Runs Flask server on port 8765 (phone polls /status and /snapshot).
     Sends images and CSVs to phone's HTTP server on port 8080.
-    CNN/ML results are returned synchronously in the POST response.
+    CNN result is returned synchronously in the POST /upload/image response.
+    ML result arrives asynchronously via POST /result/ml_result from the app.
     """
 
     FLASK_PORT = 8765
     PHONE_PORT = 8080
 
     _frame_lock          = threading.Lock()
-    _latest_frame: bytes = None   # raw JPEG bytes written by camera_manager
+    _latest_frame: bytes = None
 
     def __init__(self):
-        self.phone_ip      = None
-        self._server_ready = threading.Event()
-        self._results      = {}
-        self._results_lock = threading.Lock()
+        self.phone_ip       = None
+        self._server_ready  = threading.Event()
+        self._results       = {}
+        self._results_lock  = threading.Lock()
         self._result_events = {
             'cnn_result': threading.Event(),
             'ml_result':  threading.Event(),
@@ -46,27 +49,16 @@ class WiFiManager:
         self._flask_thread = None
         self._flask_server = None
 
-
-    # ── Frame buffer ──────────────────────────────────────────────────────
+    # ── Frame buffer ───────────────────────────────────────────────────────
 
     @classmethod
     def set_snapshot_frame(cls, jpeg_bytes: bytes):
         with cls._frame_lock:
             cls._latest_frame = jpeg_bytes
 
-
-    # ── WiFi Connection ───────────────────────────────────────────────────
+    # ── WiFi Connection ────────────────────────────────────────────────────
 
     def connect(self, ssid: str, password: str = None) -> bool:
-        """
-        Connect to hotspot and wait until BOTH:
-          1. WiFi is associated (iwgetid confirms SSID)
-          2. DHCP has assigned an IP (ip addr shows inet on wlan0)
-
-        Returning True only when both are confirmed means get_local_ip()
-        and post_ip_via_wifi() will always succeed immediately after
-        connect() — no separate DHCP wait needed in the controller.
-        """
         print(f"[WIFI] Scheduling connection to '{ssid}' in 2s...")
         threading.Thread(
             target=self._do_connect,
@@ -74,7 +66,7 @@ class WiFiManager:
             daemon=True
         ).start()
 
-        for _ in range(60):   # up to 60s — covers association + DHCP
+        for _ in range(60):
             time.sleep(1)
             if self.is_connected_to(ssid):
                 ip = self.get_local_ip()
@@ -89,9 +81,8 @@ class WiFiManager:
 
     def _do_connect(self, ssid: str, password: str = None):
         try:
-            time.sleep(2)   # BLE ACK window
+            time.sleep(2)
 
-            # Scan retry: up to 3×8s for hotspot to appear
             ssid_visible = False
             for scan_attempt in range(1, 4):
                 print("[WIFI] Running blocking rescan nmcli dev wifi list --rescan yes...")
@@ -113,7 +104,6 @@ class WiFiManager:
                 print(f"[WIFI] '{ssid}' never appeared after 3 scans — aborting")
                 return
 
-            # Delete stale profile to avoid saved-password conflicts
             if self._profile_exists(ssid):
                 print(f"[WIFI] Deleting stale profile for '{ssid}'...")
                 subprocess.run(
@@ -174,17 +164,9 @@ class WiFiManager:
         except Exception:
             return False
 
-
-    # ── IP Helpers ────────────────────────────────────────────────────────
+    # ── IP Helpers ─────────────────────────────────────────────────────────
 
     def get_local_ip(self) -> str:
-        """
-        Read wlan0 IP directly from kernel via 'ip addr show wlan0'.
-        Live read — no cached values, always reflects current DHCP state.
-        netifaces caches interface state and misses new DHCP assignments
-        on first connection.
-        """
-        # Primary: subprocess ip addr — live kernel read, no cache
         try:
             result = subprocess.run(
                 ['ip', 'addr', 'show', 'wlan0'],
@@ -200,7 +182,6 @@ class WiFiManager:
         except Exception as e:
             print(f"[WIFI] ip addr show failed: {e}")
 
-        # Secondary: netifaces
         if HAS_NETIFACES:
             try:
                 addrs = netifaces.ifaddresses('wlan0')
@@ -210,7 +191,6 @@ class WiFiManager:
             except Exception:
                 pass
 
-        # Tertiary: socket trick
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(('8.8.8.8', 80))
@@ -223,14 +203,9 @@ class WiFiManager:
             return None
 
     def get_phone_ip(self) -> str:
-        """
-        Get phone IP (default gateway on wlan0) via 'ip route' — live kernel
-        read. Cache cleared on stop() so stale IPs are never reused.
-        """
         if self.phone_ip:
             return self.phone_ip
 
-        # Primary: ip route — live routing table
         try:
             result = subprocess.run(
                 ['ip', 'route', 'show', 'dev', 'wlan0'],
@@ -247,7 +222,6 @@ class WiFiManager:
         except Exception as e:
             print(f"[WIFI] ip route failed: {e}")
 
-        # Secondary: netifaces
         if HAS_NETIFACES:
             try:
                 gws           = netifaces.gateways()
@@ -261,12 +235,6 @@ class WiFiManager:
         return None
 
     def post_ip_via_wifi(self, pi_ip: str) -> bool:
-        """
-        POST Pi's own IP to phone over WiFi — completely BLE-independent.
-        Primary IP delivery path. Phone's PhoneServer handles POST /device_ip
-        and triggers navigation to ViewDataPage immediately on receipt.
-        Called right after connect() returns True (DHCP guaranteed ready).
-        """
         if not HAS_REQUESTS:
             print("[WIFI] requests not available — cannot post IP via WiFi")
             return False
@@ -281,11 +249,7 @@ class WiFiManager:
 
         for attempt in range(1, 4):
             try:
-                resp = reqlib.post(
-                    url,
-                    json    = {'pi_ip': pi_ip},
-                    timeout = 5
-                )
+                resp = reqlib.post(url, json={'pi_ip': pi_ip}, timeout=5)
                 if resp.status_code == 200:
                     print(f"[WIFI] ✓ IP delivered to phone via WiFi "
                           f"(attempt {attempt}): {pi_ip}")
@@ -299,11 +263,9 @@ class WiFiManager:
         print("[WIFI] ✗ IP WiFi POST failed — BLE notify is fallback")
         return False
 
-
-    # ── Flask Server (Pi-side, port 8765) ─────────────────────────────────
+    # ── Flask Server (Pi-side, port 8765) ──────────────────────────────────
 
     def start_server(self):
-        """Idempotent — safe to call multiple times. No-op if already running."""
         if self._flask_server is not None:
             print("[WIFI] Flask server already running — skipping restart")
             return
@@ -356,7 +318,17 @@ class WiFiManager:
         @app.route('/result/<result_type>', methods=['POST'])
         def receive_result(result_type):
             data = request.json
-            print(f"[WIFI] SERVER Received {result_type}: {data}")
+
+            # FIX: reject CSV ack payloads — real results never have 'rows'
+            # send_file() response body {'status':'received','rows':1,...}
+            # was being stored as ml_result and picked up immediately,
+            # preventing Pi from ever waiting for the real RF result.
+            if data is None or 'rows' in data or 'features' in data:
+                print(f"[WIFI] SERVER Rejected bad payload for "
+                      f"'{result_type}': {data}")
+                return jsonify(status='rejected'), 400
+
+            print(f"[WIFI] SERVER Received '{result_type}': {data}")
             with self._results_lock:
                 self._results[result_type] = data
             if result_type in self._result_events:
@@ -375,7 +347,6 @@ class WiFiManager:
         except OSError as e:
             print(f"[WIFI] SERVER Failed to bind port {self.FLASK_PORT}: {e}")
             print(f"[WIFI] SERVER Try: sudo fuser -k {self.FLASK_PORT}/tcp")
-
 
     # ── Send Image (Pi → Phone) ────────────────────────────────────────────
 
@@ -407,8 +378,6 @@ class WiFiManager:
         for attempt in range(1, 4):
             try:
                 print(f"[WIFI] Sending image to phone attempt {attempt}/3...")
-                # Raw JPEG bytes — NOT multipart. Phone's img.decodeImage()
-                # needs pure JPEG, multipart envelope causes decode failure.
                 resp = reqlib.post(
                     url,
                     data    = image_bytes,
@@ -436,7 +405,6 @@ class WiFiManager:
         print("[WIFI] Image send failed after 3 attempts")
         return False
 
-
     # ── Send CSV (Pi → Phone) ──────────────────────────────────────────────
 
     def send_file(self, filepath: str) -> bool:
@@ -455,6 +423,8 @@ class WiFiManager:
             print(f"[WIFI] Could not read CSV file: {e}")
             return False
 
+        # FIX: clear ml_result BEFORE sending so the wait below never finds
+        # a stale value — do NOT store the HTTP ack response here
         with self._results_lock:
             self._results.pop('ml_result', None)
         self._result_events['ml_result'].clear()
@@ -471,14 +441,10 @@ class WiFiManager:
                 )
                 if resp.status_code == 200:
                     print("[WIFI] CSV sent ✓")
-                    try:
-                        result = resp.json()
-                        print(f"[WIFI] ML result from phone: {result}")
-                        with self._results_lock:
-                            self._results['ml_result'] = result
-                        self._result_events['ml_result'].set()
-                    except Exception as e:
-                        print(f"[WIFI] Could not parse ML result: {e}")
+                    # FIX: do NOT store resp.json() as ml_result here —
+                    # the response is only an ack {'status':'received','rows':1}
+                    # The real ml_result arrives later via POST /result/ml_result
+                    # from RfResultPage in the Flutter app
                     return True
                 else:
                     print(f"[WIFI] CSV send failed HTTP {resp.status_code}")
@@ -490,8 +456,7 @@ class WiFiManager:
         print("[WIFI] CSV send failed after 3 attempts")
         return False
 
-
-    # ── Wait for Results ──────────────────────────────────────────────────
+    # ── Wait for Results ───────────────────────────────────────────────────
 
     def wait_for_cnn_result(self, cancel_event=None, timeout: int = 120):
         print(f"[WIFI] Waiting for CNN result (timeout {timeout}s)...")
@@ -541,8 +506,7 @@ class WiFiManager:
         print(f"[WIFI] Unknown message type: {message_type}")
         return None
 
-
-    # ── Phone Server Readiness ────────────────────────────────────────────
+    # ── Phone Server Readiness ─────────────────────────────────────────────
 
     def _wait_for_phone_server(self, url: str, timeout: int = 15) -> bool:
         print(f"[WIFI] Waiting for phone server (up to {timeout}s)...")
@@ -559,8 +523,7 @@ class WiFiManager:
         print("[WIFI] Phone server did not respond in time")
         return False
 
-
-    # ── URL Builder ───────────────────────────────────────────────────────
+    # ── URL Builder ────────────────────────────────────────────────────────
 
     def _build_phone_url(self, endpoint: str) -> str | None:
         phone_ip = self.get_phone_ip()
@@ -571,14 +534,8 @@ class WiFiManager:
         print(f"[WIFI] Target URL: {url}")
         return url
 
-
-    # ── Stop ──────────────────────────────────────────────────────────────
+    # ── Stop ───────────────────────────────────────────────────────────────
 
     def stop(self):
-        """
-        Reset WiFi session state only. Flask keeps running — started at app
-        boot and lives for the full app lifetime. Clearing phone_ip ensures
-        the stale gateway from this session is not reused next time.
-        """
         self.phone_ip = None
         print("[WIFI] WiFi session reset (Flask keeps running)")
