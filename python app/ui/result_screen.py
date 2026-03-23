@@ -75,7 +75,7 @@ class ResultScreen(Screen):
 
         # ── Buttons ───────────────────────────────────────────────────────
         button_box = BoxLayout(
-            orientation='horizontal',
+            orientation='vertical',
             size_hint=(1, .5),
             spacing=10,
         )
