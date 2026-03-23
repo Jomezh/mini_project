@@ -3,12 +3,15 @@ from threading import Thread, Event
 import time
 import os
 
+
 WIFI_RETRY_LIMIT         = 3
 WIFI_RETRY_INTERVAL      = 10
 WIFI_FIRST_HOTSPOT_WAIT  = 25
 
 
+
 class AppController:
+
 
     def __init__(self, screen_manager, device_manager):
         self.sm                    = screen_manager
@@ -25,9 +28,11 @@ class AppController:
         self._current_ssid         = None
         self._connection_time      = 0.0
 
+
     def on_app_start(self):
         Thread(target=self.dm.hardware.initialize, daemon=True).start()
         Thread(target=self.dm.network.start_wifi_server, daemon=True).start()
+
 
     def cleanup(self):
         self.dm.cleanup()
@@ -38,10 +43,13 @@ class AppController:
         if self._cnn_timeout_event:
             self._cnn_timeout_event.cancel()
 
+
     def cancel_wifi_connect(self):
         self._wifi_cancel.set()
 
+
     # ── Navigation ────────────────────────────────────────────────────────────
+
 
     def go_to_home(self):
         if self.current_connected_mac:
@@ -56,7 +64,9 @@ class AppController:
                 )
         self.sm.current = 'home'
 
+
     # ── Boot flow ─────────────────────────────────────────────────────────────
+
 
     def start_pairing_screen(self):
         screen = self.sm.get_screen('pairing')
@@ -66,7 +76,9 @@ class AppController:
         else:
             screen.show_qr()
 
+
     # ── BLE scan / auto-connect ───────────────────────────────────────────────
+
 
     def scan_for_known_device(self):
         try:
@@ -86,6 +98,7 @@ class AppController:
                 ), 0
             )
 
+
     def auto_connect(self, known_device):
         self.sm.get_screen('pairing').show_connecting(known_device['ble_name'])
         Thread(
@@ -93,6 +106,7 @@ class AppController:
             args=(known_device,),
             daemon=True
         ).start()
+
 
     def do_wifi_connect_with_retry(self, known_device):
         try:
@@ -106,6 +120,7 @@ class AppController:
                     message=f"Connection error: {err}"
                 ), 0
             )
+
 
     def autoconnect_retry_logic(self, known_device):
         ssid   = known_device['ssid']
@@ -139,6 +154,20 @@ class AppController:
                 self._wifi_connected       = True
                 self._current_ssid         = ssid
                 self.dm.update_last_connected(blemac)
+
+                # FIX: deliver Pi IP to phone on every reconnect —
+                # DHCP can assign a different IP each session so the
+                # phone must always be told the current address.
+                # BLE is NOT used here — no GATT server is running in
+                # the known-device path, so WiFi POST is the only channel.
+                pi_ip = self.dm.network.get_local_ip()
+                if pi_ip:
+                    wifi_posted = self.dm.network.post_ip_via_wifi(pi_ip)
+                    time.sleep(3 if wifi_posted else 6)
+                else:
+                    print("[CONTROLLER] Could not get local IP — phone may not navigate")
+                    time.sleep(3)
+
                 self.dm.start_heartbeat_after_wifi(
                     on_disconnected=self.on_phone_disconnected
                 )
@@ -155,15 +184,19 @@ class AppController:
             ), 0
         )
 
+
     def retry_wifi_now(self):
         self.sm.get_screen('pairing').show_scanning()
         Thread(target=self.scan_for_known_device, daemon=True).start()
+
 
     def rescan_for_devices(self):
         self.sm.get_screen('pairing').show_scanning()
         Thread(target=self.scan_for_known_device, daemon=True).start()
 
+
     # ── New BLE pairing flow ──────────────────────────────────────────────────
+
 
     def start_pairing(self):
         self.cancel_wifi_connect()
@@ -177,6 +210,7 @@ class AppController:
             lambda dt: self.on_ble_pairing_timeout(), 180
         )
         Thread(target=self.wait_for_pairing, daemon=True).start()
+
 
     def wait_for_pairing(self):
         try:
@@ -198,6 +232,7 @@ class AppController:
                 ), 0
             )
 
+
     def on_paired(self, credentials):
         if self.ble_timeout_event:
             self.ble_timeout_event.cancel()
@@ -212,6 +247,7 @@ class AppController:
             daemon=True
         ).start()
 
+
     def do_new_pair_wifi_connect(self, credentials):
         try:
             self.new_pair_wifi_logic(credentials)
@@ -225,6 +261,7 @@ class AppController:
                     message=f"Connection error: {err}"
                 ), 0
             )
+
 
     def new_pair_wifi_logic(self, credentials):
         ssid     = credentials['ssid']
@@ -283,15 +320,19 @@ class AppController:
             ), 0
         )
 
+
     def on_ble_pairing_timeout(self):
         self.dm.network.stop_ble()
         self.sm.get_screen('pairing').show_qr(message="Pairing timed out - try again")
+
 
     def stop_ble_pairing(self):
         self.dm.network.stop_ble()
         self.sm.get_screen('pairing').show_qr()
 
+
     # ── Device management ─────────────────────────────────────────────────────
+
 
     def reset_pairing(self):
         self.cancel_wifi_connect()
@@ -303,6 +344,7 @@ class AppController:
         Clock.schedule_once(
             lambda dt: self.sm.get_screen('pairing').show_qr(), 0.1
         )
+
 
     def forget_device(self):
         if self._wifi_connected and (time.time() - self._connection_time) < 5.0:
@@ -326,6 +368,7 @@ class AppController:
         self.sm.current = 'pairing'
         Clock.schedule_once(lambda dt: self.start_pairing_screen(), 0.3)
 
+
     def on_phone_disconnected(self):
         if self._current_ssid and self.dm.network.is_connected_to(self._current_ssid):
             print("[CONTROLLER] Heartbeat ping failed but WiFi still active — suppressing reset")
@@ -347,7 +390,9 @@ class AppController:
         self.sm.current            = 'pairing'
         Clock.schedule_once(lambda dt: self.start_pairing_screen(), 0.3)
 
+
     # ── Test / sensor flow ────────────────────────────────────────────────────
+
 
     def start_test(self):
         if not self.dm.hardware.are_voc_sensors_ready():
@@ -359,6 +404,7 @@ class AppController:
             self.sm.current = 'capture'
             self.sm.get_screen('capture').start_preview()
 
+
     def check_voc_ready(self, dt):
         if self.dm.hardware.are_voc_sensors_ready():
             if self.priming_check_event:
@@ -367,9 +413,11 @@ class AppController:
             self.sm.current = 'capture'
             self.sm.get_screen('capture').start_preview()
 
+
     def capture_image(self):
         self.sm.get_screen('capture').disable_capture()
         Thread(target=self.do_capture, daemon=True).start()
+
 
     def do_capture(self):
         try:
@@ -381,6 +429,7 @@ class AppController:
             screen = self.sm.get_screen('capture')
             Clock.schedule_once(lambda dt: screen.show_error(f"Capture error: {err}"), 0)
             Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
+
 
     def capture_logic(self):
         screen     = self.sm.get_screen('capture')
@@ -415,14 +464,16 @@ class AppController:
                 Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
         else:
             self.current_test_data['food_type']       = 'Unknown'
-            self.current_test_data['sensors_to_read'] = ['MQ2','MQ3','MQ4','MQ5',
-                                                          'MQ6','MQ8','MQ9','MQ135','MQ136']
+            self.current_test_data['sensors_to_read'] = ['MQ2', 'MQ3', 'MQ4', 'MQ5',
+                                                          'MQ6', 'MQ8', 'MQ9', 'MQ135', 'MQ136']
             self.delete_image(image_path)
             Clock.schedule_once(lambda dt: self.proceed_to_reading(), 0)
+
 
     def _show_cnn_cancel_btn(self):
         if self.sm.current == 'analyzing':
             self.sm.get_screen('analyzing').show_cancel_btn()
+
 
     def cancel_analysis(self):
         self._cnn_cancel.set()
@@ -435,6 +486,7 @@ class AppController:
             self.delete_image(image_path)
         self.current_test_data = {}
         Clock.schedule_once(lambda dt: self.go_to_home(), 0)
+
 
     def wait_for_cnn_result(self):
         try:
@@ -451,6 +503,7 @@ class AppController:
             print(f"[CONTROLLER] !! CNN result thread crash: {e}")
             Clock.schedule_once(lambda dt: self._on_cnn_timeout(), 0)
 
+
     def _on_cnn_timeout(self):
         if self._cnn_timeout_event:
             self._cnn_timeout_event.cancel()
@@ -463,6 +516,7 @@ class AppController:
         self.sm.get_screen('analyzing').show_timeout_message(
             on_home=lambda: self.go_to_home()
         )
+
 
     def on_cnn_result_received(self, result):
         if self._cnn_timeout_event:
@@ -487,7 +541,7 @@ class AppController:
             return
 
         self.current_test_data['food_type']       = result.get('food_type')
-        # Filter out DHT11 from CNN sensor list — DHT11 is always read, not an ADC channel
+        # Filter out DHT11 — it is always read, not an ADC channel
         sensors_raw = result.get('sensors', [])
         self.current_test_data['sensors_to_read'] = [
             s for s in sensors_raw if s != 'DHT11'
@@ -496,6 +550,7 @@ class AppController:
         if image_path:
             self.delete_image(image_path)
         self.proceed_to_reading()
+
 
     def proceed_to_reading(self):
         self.sm.current = 'reading'
@@ -507,6 +562,7 @@ class AppController:
         )
         Thread(target=self.read_voc_sensors, daemon=True).start()
 
+
     def read_voc_sensors(self):
         try:
             self.sensor_read_logic()
@@ -514,6 +570,7 @@ class AppController:
             import traceback
             print(f"[CONTROLLER] !! Sensor read thread crash: {e}")
             traceback.print_exc()
+
 
     def sensor_read_logic(self):
         sensors     = self.current_test_data.get('sensors_to_read', [])
@@ -525,7 +582,7 @@ class AppController:
             )
 
         all_data = self.dm.hardware.read_all_sensor_data(sensors, progress_cb=_progress)
-        csv_path = self.dm.hardware.generate_sensor_csv(all_data, sensors)  # ← updated
+        csv_path = self.dm.hardware.generate_sensor_csv(all_data, sensors)
 
         import config
         if config.USE_REAL_NETWORK:
@@ -549,16 +606,20 @@ class AppController:
             time.sleep(1)
             Clock.schedule_once(lambda dt: self.show_result(mock_result), 0)
 
+
     def show_result(self, result):
         self.sm.current = 'result'
         self.sm.get_screen('result').display_result(result)
+
 
     def test_again(self):
         self.current_test_data = {}
         self.sm.current        = 'home'
 
+
     def shutdown_device(self):
         self.dm.shutdown()
+
 
     def delete_image(self, image_path):
         try:
