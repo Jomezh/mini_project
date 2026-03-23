@@ -234,7 +234,13 @@ class WiFiManager:
 
         return None
 
-    def post_ip_via_wifi(self, pi_ip: str) -> bool:
+    def post_ip_via_wifi(self, pi_ip: str, device_id: str = '') -> bool:
+        """
+        POST Pi IP + device_id to phone over WiFi.
+        Phone verifies device_id against its saved paired_device_id —
+        returns 403 if this Pi is not the one it paired with.
+        Primary IP delivery path, fully BLE-independent.
+        """
         if not HAS_REQUESTS:
             print("[WIFI] requests not available — cannot post IP via WiFi")
             return False
@@ -245,22 +251,30 @@ class WiFiManager:
             return False
 
         url = f"http://{phone_ip}:{self.PHONE_PORT}/device_ip"
-        print(f"[WIFI] POSTing Pi IP to phone: {url}")
+        print(f"[WIFI] POSTing Pi IP+ID to phone: {url}")
 
         for attempt in range(1, 4):
             try:
-                resp = reqlib.post(url, json={'pi_ip': pi_ip}, timeout=5)
+                resp = reqlib.post(
+                    url,
+                    json    = {'pi_ip': pi_ip, 'device_id': device_id},
+                    timeout = 5
+                )
                 if resp.status_code == 200:
                     print(f"[WIFI] ✓ IP delivered to phone via WiFi "
-                          f"(attempt {attempt}): {pi_ip}")
+                          f"(attempt {attempt}): {pi_ip}  id={device_id}")
                     return True
+                elif resp.status_code == 403:
+                    print(f"[WIFI] ✗ Phone rejected this device (403) — "
+                          f"device_id mismatch. Re-pair required.")
+                    return False
                 print(f"[WIFI] IP post HTTP {resp.status_code} attempt {attempt}")
             except Exception as e:
                 print(f"[WIFI] IP post attempt {attempt} failed: {e}")
                 if attempt < 3:
                     time.sleep(1)
 
-        print("[WIFI] ✗ IP WiFi POST failed — BLE notify is fallback")
+        print("[WIFI] ✗ IP WiFi POST failed")
         return False
 
     # ── Flask Server (Pi-side, port 8765) ──────────────────────────────────
@@ -319,10 +333,7 @@ class WiFiManager:
         def receive_result(result_type):
             data = request.json
 
-            # FIX: reject CSV ack payloads — real results never have 'rows'
-            # send_file() response body {'status':'received','rows':1,...}
-            # was being stored as ml_result and picked up immediately,
-            # preventing Pi from ever waiting for the real RF result.
+            # Reject CSV ack payloads — real results never contain 'rows'.
             if data is None or 'rows' in data or 'features' in data:
                 print(f"[WIFI] SERVER Rejected bad payload for "
                       f"'{result_type}': {data}")
@@ -423,8 +434,6 @@ class WiFiManager:
             print(f"[WIFI] Could not read CSV file: {e}")
             return False
 
-        # FIX: clear ml_result BEFORE sending so the wait below never finds
-        # a stale value — do NOT store the HTTP ack response here
         with self._results_lock:
             self._results.pop('ml_result', None)
         self._result_events['ml_result'].clear()
@@ -441,10 +450,6 @@ class WiFiManager:
                 )
                 if resp.status_code == 200:
                     print("[WIFI] CSV sent ✓")
-                    # FIX: do NOT store resp.json() as ml_result here —
-                    # the response is only an ack {'status':'received','rows':1}
-                    # The real ml_result arrives later via POST /result/ml_result
-                    # from RfResultPage in the Flutter app
                     return True
                 else:
                     print(f"[WIFI] CSV send failed HTTP {resp.status_code}")

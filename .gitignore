@@ -38,6 +38,9 @@ sensor_data_*.csv
 test_images/
 captured_*.jpg
 captured_*.png
+ui/
+*.kv
+preview.py
 
 # Logs
 *.log
