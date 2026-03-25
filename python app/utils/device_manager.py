@@ -3,16 +3,20 @@ import json
 import uuid
 import subprocess
 import time
+import threading
 import config
 
 
+
 class DeviceManager:
+
 
     CONFIG_FILE = (
         '/home/minik/.minik_config.json'
         if config.IS_RASPBERRY_PI
         else './minik_config.json'
     )
+
 
     def __init__(self):
         self.device_id    = self._load_or_generate_device_id()
@@ -21,15 +25,19 @@ class DeviceManager:
         self.network      = NetworkManager(self.device_id)
         self.heartbeat    = None
 
+
         from utils.cleanup_manager import CleanupManager
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.cleanup_manager = CleanupManager(base_dir)
         self.cleanup_manager.start()
 
+
     # ── Device ID ─────────────────────────────────────────────────────────────
+
 
     def get_device_id(self):
         return self.device_id
+
 
     def _load_or_generate_device_id(self):
         if os.path.exists(self.CONFIG_FILE):
@@ -44,6 +52,7 @@ class DeviceManager:
         self._write_config({'device_id': device_id, 'known_devices': []})
         return device_id
 
+
     def _load_config(self):
         if os.path.exists(self.CONFIG_FILE):
             try:
@@ -53,6 +62,7 @@ class DeviceManager:
                 pass
         return {'device_id': self.device_id, 'known_devices': []}
 
+
     def _write_config(self, data):
         os.makedirs(
             os.path.dirname(os.path.abspath(self.CONFIG_FILE)),
@@ -61,23 +71,27 @@ class DeviceManager:
         with open(self.CONFIG_FILE, 'w') as f:
             json.dump(data, f, indent=2)
 
+
     # ── Known Devices ─────────────────────────────────────────────────────────
+
 
     def get_known_devices(self):
         return self.config_data.get('known_devices', [])
 
+
     def has_known_devices(self):
         return len(self.get_known_devices()) > 0
+
 
     def save_pairing(self, credentials):
         from datetime import datetime
         known   = self.get_known_devices()
         ble_mac = credentials.get('ble_mac', '')
         entry   = {
-            'ble_name':      credentials.get('ble_name', ''),
-            'ble_mac':       ble_mac,
-            'ssid':          credentials.get('ssid', ''),
-            'phone_address': credentials.get('phone_address', ''),
+            'ble_name':       credentials.get('ble_name', ''),
+            'ble_mac':        ble_mac,
+            'ssid':           credentials.get('ssid', ''),
+            'phone_address':  credentials.get('phone_address', ''),
             'last_connected': datetime.now().isoformat()
         }
         existing = next(
@@ -92,6 +106,7 @@ class DeviceManager:
         self.config_data['known_devices'] = known
         self._write_config(self.config_data)
 
+
     def update_last_connected(self, ble_mac):
         from datetime import datetime
         known = self.get_known_devices()
@@ -102,6 +117,7 @@ class DeviceManager:
         self.config_data['known_devices'] = known
         self._write_config(self.config_data)
 
+
     def reset_pairing(self):
         if self.heartbeat:
             self.heartbeat.stop()
@@ -109,6 +125,7 @@ class DeviceManager:
         self.config_data['known_devices'] = []
         self._write_config(self.config_data)
         print("[DEVICE] All pairing data cleared")
+
 
     def remove_device(self, ble_mac):
         known = [
@@ -119,7 +136,9 @@ class DeviceManager:
         self._write_config(self.config_data)
         print(f"[DEVICE] Removed device: {ble_mac}")
 
+
     # ── Boot Scan ─────────────────────────────────────────────────────────────
+
 
     def scan_for_known_devices(self, timeout=10):
         known = self.get_known_devices()
@@ -145,7 +164,9 @@ class DeviceManager:
         print("[DEVICE] No known devices found nearby")
         return None
 
+
     # ── Heartbeat ─────────────────────────────────────────────────────────────
+
 
     def start_heartbeat_after_wifi(self, on_disconnected=None):
         if not config.USE_REAL_NETWORK:
@@ -166,6 +187,7 @@ class DeviceManager:
         else:
             print("[DEVICE] Heartbeat skipped — could not resolve phone IP")
 
+
     def _start_heartbeat(self, phone_address, on_disconnected=None):
         from network.heartbeat_manager import HeartbeatManager
         if self.heartbeat:
@@ -181,15 +203,19 @@ class DeviceManager:
         self.heartbeat.start()
         print(f"[DEVICE] Heartbeat started → {phone_address}")
 
+
     def pause_heartbeat(self):
         if self.heartbeat:
             self.heartbeat.pause()
+
 
     def resume_heartbeat(self):
         if self.heartbeat:
             self.heartbeat.resume()
 
+
     # ── Cleanup / Shutdown ────────────────────────────────────────────────────
+
 
     def cleanup(self):
         self.hardware.cleanup()
@@ -197,6 +223,7 @@ class DeviceManager:
         self.cleanup_manager.stop()
         if self.heartbeat:
             self.heartbeat.stop()
+
 
     def shutdown(self):
         self.cleanup()
@@ -208,9 +235,12 @@ class DeviceManager:
             App.get_running_app().stop()
 
 
+
 # ── HardwareManager ───────────────────────────────────────────────────────────
 
+
 class HardwareManager:
+
 
     def __init__(self):
         if config.USE_REAL_CAMERA:
@@ -227,6 +257,7 @@ class HardwareManager:
             self.camera = MockCameraManager()
             print("[HARDWARE] Using MOCK camera")
 
+
         if config.USE_REAL_SENSORS or config.USE_REAL_DHT11:
             try:
                 from hardware.sensor_manager import SensorManager
@@ -241,14 +272,15 @@ class HardwareManager:
             self.sensors = MockSensorManager()
             print("[HARDWARE] Using MOCK sensors")
 
+
     def initialize(self):
-        # Each component initializes independently — one failing won't block the other
         try:
             self.sensors.initialize()
         except Exception as e:
             import traceback
             print(f"[HARDWARE] ⚠ Sensor init error: {e}")
             traceback.print_exc()
+
 
         try:
             self.camera.initialize()
@@ -257,31 +289,40 @@ class HardwareManager:
             print(f"[HARDWARE] ⚠ Camera init error: {e}")
             traceback.print_exc()
 
+
     def start_voc_priming(self):     self.sensors.start_priming()
     def are_voc_sensors_ready(self): return self.sensors.are_ready()
+
 
     def read_all_sensor_data(self, sl, progress_cb=None):
         return self.sensors.read_all_data(sl, progress_cb=progress_cb)
 
+
     def generate_sensor_csv(self, d): return self.sensors.generate_csv(d)
+
 
     def start_camera_preview(self):  self.camera.start_preview()
     def stop_camera_preview(self):   self.camera.stop_preview()
     def get_preview_texture(self):   return self.camera.get_preview_texture()
     def capture_image(self):         return self.camera.capture_image()
 
+
     def cleanup(self):
         self.sensors.cleanup()
         self.camera.cleanup()
 
 
+
 # ── NetworkManager ────────────────────────────────────────────────────────────
 
+
 class NetworkManager:
+
 
     def __init__(self, device_id):
         self.device_id = device_id
         self.mode      = 'ble'
+
 
         if config.USE_REAL_NETWORK:
             try:
@@ -303,18 +344,22 @@ class NetworkManager:
             self.wifi = mock
             print("[NETWORK] Using MOCK network")
 
+
     def start_ble_advertising(self):
         fn = getattr(self.ble, 'start_advertising',
              getattr(self.ble, 'start_ble_advertising', None))
         return fn() if fn else False
+
 
     def scan_for_devices(self, known_macs, known_names, timeout=10):
         if hasattr(self.ble, 'scan_for_devices'):
             return self.ble.scan_for_devices(known_macs, known_names, timeout)
         return None
 
+
     def wait_for_pairing(self): return self.ble.wait_for_pairing()
     def stop_ble(self):         return self.ble.stop()
+
 
     def connect_wifi(self, ssid, password=None):
         ok = self.wifi.connect(ssid, password)
@@ -322,47 +367,57 @@ class NetworkManager:
             self.mode = 'wifi'
         return ok
 
+
     def get_local_ip(self):
         if hasattr(self.wifi, 'get_local_ip'):
             return self.wifi.get_local_ip()
         return None
+
 
     def get_phone_ip(self):
         if hasattr(self.wifi, 'get_phone_ip'):
             return self.wifi.get_phone_ip()
         return None
 
+
     def is_connected_to(self, ssid: str) -> bool:
         if hasattr(self.wifi, 'is_connected_to'):
             return self.wifi.is_connected_to(ssid)
         return False
+
 
     def send_ip_to_phone(self, ip):
         if hasattr(self.ble, 'send_ip_to_phone'):
             return self.ble.send_ip_to_phone(ip)
         return False
 
+
     def post_ip_via_wifi(self, pi_ip: str) -> bool:
         if hasattr(self.wifi, 'post_ip_via_wifi'):
-            return self.wifi.post_ip_via_wifi(pi_ip)
+            return self.wifi.post_ip_via_wifi(pi_ip, self.device_id)  # ← FIXED
         return False
+
 
     def notify_enable_hotspot(self):
         if hasattr(self.ble, 'notify_enable_hotspot'):
             return self.ble.notify_enable_hotspot()
         return False
 
+
     def start_wifi_server(self):
         if hasattr(self.wifi, 'start_server'):
             self.wifi.start_server()
+
 
     def stop(self):
         if hasattr(self.wifi, 'stop'):
             self.wifi.stop()
         self.mode = 'ble'
 
+
     def send_image_to_phone(self, path):
         return self.wifi.send_image(path) if self.mode == 'wifi' else False
+
 
     def wait_for_cnn_result(self, cancel_event=None):
         if self.mode != 'wifi':
@@ -371,8 +426,10 @@ class NetworkManager:
             return self.wifi.wait_for_cnn_result(cancel_event=cancel_event)
         return self.wifi.wait_for_message('cnn_result')
 
+
     def send_csv_to_phone(self, path):
         return self.wifi.send_file(path) if self.mode == 'wifi' else False
+
 
     def wait_for_ml_result(self, cancel_event=None):
         if self.mode != 'wifi':
@@ -380,6 +437,7 @@ class NetworkManager:
         if hasattr(self.wifi, 'wait_for_ml_result'):
             return self.wifi.wait_for_ml_result(cancel_event=cancel_event)
         return self.wifi.wait_for_message('ml_result')
+
 
     def cleanup(self):
         if hasattr(self.ble,  'stop'): self.ble.stop()
