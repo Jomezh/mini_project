@@ -1,11 +1,9 @@
 import os
 import json
 import uuid
+import subprocess
 import time
 import config
-
-
-MAX_KNOWN_DEVICES = 5   # max phones Pi will remember
 
 
 class DeviceManager:
@@ -17,18 +15,18 @@ class DeviceManager:
     )
 
     def __init__(self):
-        self.device_id   = self._load_or_generate_device_id()
-        self.config_data = self._load_config()
-        self.hardware    = HardwareManager()
-        self.network     = NetworkManager(self.device_id)
-        self.heartbeat   = None
+        self.device_id    = self._load_or_generate_device_id()
+        self.config_data  = self._load_config()
+        self.hardware     = HardwareManager()
+        self.network      = NetworkManager(self.device_id)
+        self.heartbeat    = None
 
         from utils.cleanup_manager import CleanupManager
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.cleanup_manager = CleanupManager(base_dir)
         self.cleanup_manager.start()
 
-    # ── Device ID ─────────────────────────────────────────────────────────
+    # ── Device ID ─────────────────────────────────────────────────────────────
 
     def get_device_id(self):
         return self.device_id
@@ -63,7 +61,7 @@ class DeviceManager:
         with open(self.CONFIG_FILE, 'w') as f:
             json.dump(data, f, indent=2)
 
-    # ── Known Devices ──────────────────────────────────────────────────────
+    # ── Known Devices ─────────────────────────────────────────────────────────
 
     def get_known_devices(self):
         return self.config_data.get('known_devices', [])
@@ -73,41 +71,24 @@ class DeviceManager:
 
     def save_pairing(self, credentials):
         from datetime import datetime
-        known    = self.get_known_devices()
-        ble_mac  = credentials.get('ble_mac', '')
-        ble_name = credentials.get('ble_name', '')
-
-        entry = {
-            'ble_name':       ble_name,
-            'ble_mac':        ble_mac,
-            'ssid':           credentials.get('ssid', ''),
-            'phone_address':  credentials.get('phone_address', ''),
-            'last_connected': datetime.now().isoformat(),
+        known   = self.get_known_devices()
+        ble_mac = credentials.get('ble_mac', '')
+        entry   = {
+            'ble_name':      credentials.get('ble_name', ''),
+            'ble_mac':       ble_mac,
+            'ssid':          credentials.get('ssid', ''),
+            'phone_address': credentials.get('phone_address', ''),
+            'last_connected': datetime.now().isoformat()
         }
-
-        # Dedup by mac OR name — Android MAC randomization means
-        # ble_mac == ble_name (phone adapter name). Match either to
-        # avoid duplicate entries when phone renames or re-pairs.
-        existing_idx = next(
-            (i for i, d in enumerate(known)
-             if (ble_mac  and d.get('ble_mac')  == ble_mac)
-             or (ble_name and d.get('ble_name') == ble_name)),
-            None
+        existing = next(
+            (d for d in known if d.get('ble_mac') == ble_mac), None
         )
-
-        if existing_idx is not None:
-            known[existing_idx] = entry
-            print(f"[DEVICE] Updated known device: {ble_name}")
+        if existing:
+            known[known.index(existing)] = entry
+            print(f"[DEVICE] Updated known device: {entry['ble_name']}")
         else:
             known.append(entry)
-            print(f"[DEVICE] New device saved: {ble_name}")
-            if len(known) > MAX_KNOWN_DEVICES:
-                known.sort(key=lambda d: d.get('last_connected', ''), reverse=True)
-                removed = known[MAX_KNOWN_DEVICES:]
-                known   = known[:MAX_KNOWN_DEVICES]
-                for r in removed:
-                    print(f"[DEVICE] Evicted old entry: {r['ble_name']}")
-
+            print(f"[DEVICE] New device saved: {entry['ble_name']}")
         self.config_data['known_devices'] = known
         self._write_config(self.config_data)
 
@@ -138,16 +119,17 @@ class DeviceManager:
         self._write_config(self.config_data)
         print(f"[DEVICE] Removed device: {ble_mac}")
 
-    # ── Boot Scan ──────────────────────────────────────────────────────────
+    # ── Boot Scan ─────────────────────────────────────────────────────────────
 
     def scan_for_known_devices(self, timeout=10):
         known = self.get_known_devices()
         if not known:
             print("[DEVICE] No known devices to scan for")
             return None
-        known_macs  = {d['ble_mac']:  d for d in known}
+        known_macs  = {d['ble_mac']: d for d in known}
         known_names = {d['ble_name']: d for d in known}
-        print(f"[DEVICE] Scanning for {len(known)} known device(s)...")
+        print(f"[DEVICE] Scanning for {len(known)} known device(s)... "
+              f"({'mock' if not config.USE_REAL_NETWORK else 'real'})")
         found = self.network.scan_for_devices(
             known_macs  = list(known_macs.keys()),
             known_names = list(known_names.keys()),
@@ -163,13 +145,15 @@ class DeviceManager:
         print("[DEVICE] No known devices found nearby")
         return None
 
-    # ── Heartbeat ──────────────────────────────────────────────────────────
+    # ── Heartbeat ─────────────────────────────────────────────────────────────
 
     def start_heartbeat_after_wifi(self, on_disconnected=None):
         if not config.USE_REAL_NETWORK:
             return
         phone_ip = self.network.wifi.get_phone_ip()
         if phone_ip:
+            print(f"[DEVICE] Heartbeat scheduled → phone at {phone_ip} "
+                  f"(15s grace period for phone app to load ViewDataPage)")
             import threading
             threading.Timer(
                 15.0,
@@ -205,7 +189,7 @@ class DeviceManager:
         if self.heartbeat:
             self.heartbeat.resume()
 
-    # ── Cleanup / Shutdown ─────────────────────────────────────────────────
+    # ── Cleanup / Shutdown ────────────────────────────────────────────────────
 
     def cleanup(self):
         self.hardware.cleanup()
@@ -258,20 +242,33 @@ class HardwareManager:
             print("[HARDWARE] Using MOCK sensors")
 
     def initialize(self):
-        self.sensors.initialize()
-        self.camera.initialize()
+        # Each component initializes independently — one failing won't block the other
+        try:
+            self.sensors.initialize()
+        except Exception as e:
+            import traceback
+            print(f"[HARDWARE] ⚠ Sensor init error: {e}")
+            traceback.print_exc()
 
-    def start_voc_priming(self):               self.sensors.start_priming()
-    def are_voc_sensors_ready(self):           return self.sensors.are_ready()
-    def warmup_remaining(self):                return self.sensors.warmup_remaining()
+        try:
+            self.camera.initialize()
+        except Exception as e:
+            import traceback
+            print(f"[HARDWARE] ⚠ Camera init error: {e}")
+            traceback.print_exc()
+
+    def start_voc_priming(self):     self.sensors.start_priming()
+    def are_voc_sensors_ready(self): return self.sensors.are_ready()
+
     def read_all_sensor_data(self, sl, progress_cb=None):
         return self.sensors.read_all_data(sl, progress_cb=progress_cb)
-    def generate_sensor_csv(self, d, sensor_list):
-        return self.sensors.generate_csv(d, sensor_list)
-    def start_camera_preview(self):            self.camera.start_preview()
-    def stop_camera_preview(self):             self.camera.stop_preview()
-    def get_preview_texture(self):             return self.camera.get_preview_texture()
-    def capture_image(self):                   return self.camera.capture_image()
+
+    def generate_sensor_csv(self, d): return self.sensors.generate_csv(d)
+
+    def start_camera_preview(self):  self.camera.start_preview()
+    def stop_camera_preview(self):   self.camera.stop_preview()
+    def get_preview_texture(self):   return self.camera.get_preview_texture()
+    def capture_image(self):         return self.camera.capture_image()
 
     def cleanup(self):
         self.sensors.cleanup()
@@ -288,7 +285,7 @@ class NetworkManager:
 
         if config.USE_REAL_NETWORK:
             try:
-                from network.ble_manager  import BLEManager
+                from network.ble_manager import BLEManager
                 from network.wifi_manager import WiFiManager
                 self.ble  = BLEManager(device_id)
                 self.wifi = WiFiManager()
@@ -316,8 +313,8 @@ class NetworkManager:
             return self.ble.scan_for_devices(known_macs, known_names, timeout)
         return None
 
-    def wait_for_pairing(self):  return self.ble.wait_for_pairing()
-    def stop_ble(self):          return self.ble.stop()
+    def wait_for_pairing(self): return self.ble.wait_for_pairing()
+    def stop_ble(self):         return self.ble.stop()
 
     def connect_wifi(self, ssid, password=None):
         ok = self.wifi.connect(ssid, password)
@@ -346,9 +343,8 @@ class NetworkManager:
         return False
 
     def post_ip_via_wifi(self, pi_ip: str) -> bool:
-        """Primary IP delivery — includes device_id so phone can verify identity."""
         if hasattr(self.wifi, 'post_ip_via_wifi'):
-            return self.wifi.post_ip_via_wifi(pi_ip, device_id=self.device_id)
+            return self.wifi.post_ip_via_wifi(pi_ip)
         return False
 
     def notify_enable_hotspot(self):
