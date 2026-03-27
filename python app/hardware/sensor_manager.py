@@ -6,16 +6,19 @@ import math
 from datetime import datetime
 import config
 
+
 if config.IS_RASPBERRY_PI:
     import RPi.GPIO as GPIO
     import spidev
     import board
     import adafruit_dht
 
+
 MOSFET_PIN   = 26
 CS_MCP1      = 5
 CS_MCP2      = 6
 DHT_PIN_NUM  = 4
+
 
 VREF         = 3.3
 VCC_MQ       = 5.0
@@ -24,20 +27,26 @@ R_UPPER      = 20000.0
 R_LOWER      = 10000.0
 DIVIDER_GAIN = (R_UPPER + R_LOWER) / R_LOWER   # 3.0
 
+
 DEFAULT_WARMUP_SECS = 30
+
 
 N_SAMPLES    = 30
 SAMPLE_DELAY = 1.0
+
 
 MCP1_CHANNELS = ['MQ2', 'MQ3', 'MQ4', 'MQ5', 'MQ6', 'MQ8', 'MQ9', 'MQ135']
 MCP2_CHANNELS = ['MQ136']
 ALL_MQ        = MCP1_CHANNELS + MCP2_CHANNELS
 
+
 _SPI_CANDIDATES = [(0, 1), (1, 0), (0, 0)]
+
 
 BASELINE_RATIO_TOLERANCE = 15.0
 LOW_SIGNAL_THRESHOLD     = 50
 LOW_SIGNAL_STABLE_RANGE  = 5
+
 
 CLEAN_AIR_RATIO = {
     'MQ135': 3.6, 'MQ136': 3.4, 'MQ2': 9.8,  'MQ3': 60.0,
@@ -275,6 +284,9 @@ class SensorManager:
     # ── DHT11 ─────────────────────────────────────────────────────────────────
 
     def _read_dht(self):
+        if self._dht is None:                          # ← ADDED guard
+            print("[SENSORS] DHT11 not initialized — skipping")
+            return None, None
         for _ in range(3):
             try:
                 t = self._dht.temperature
