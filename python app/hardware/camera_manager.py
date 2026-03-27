@@ -40,14 +40,12 @@ class CameraManager:
 
     @property
     def preview_active(self):
-        """True only when camera is fully running and serving frames."""
         return self._state == 'previewing'
 
     @property
     def _starting(self):
-        """True while the background start thread is running.
-        Exposed so capture_screen._poll_camera_ready can distinguish
-        'still starting' from 'failed to start'."""
+        """Exposes the 'starting' state so capture_screen._poll_camera_ready
+        can distinguish 'still starting' from 'failed to start'."""
         return self._state == 'starting'
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -102,8 +100,7 @@ class CameraManager:
                     daemon=True
                 ).start()
                 return
-            self._state = 'starting'   # ← set synchronously so _starting
-                                       #   property is True before poll fires
+            self._state = 'starting'
 
         self._last_error = None
         threading.Thread(target=self._start_preview_worker, daemon=True).start()
@@ -180,13 +177,11 @@ class CameraManager:
             try:
                 frame   = cam.capture_array("main")
                 h, w, _ = frame.shape
-                # Flip vertically for OpenGL coordinate system (origin = bottom-left)
                 flipped = frame[::-1, :, :].copy()
-                # RGB888 → colorfmt='rgb'  (was 'bgr' — caused R/B channel swap)
-                texture = Texture.create(size=(w, h), colorfmt='rgb')
+                texture = Texture.create(size=(w, h), colorfmt='bgr')
                 texture.blit_buffer(
                     flipped.tobytes(),
-                    colorfmt='rgb', bufferfmt='ubyte'
+                    colorfmt='bgr', bufferfmt='ubyte'
                 )
                 self.current_texture = texture
                 return texture
