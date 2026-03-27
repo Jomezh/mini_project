@@ -260,12 +260,13 @@ class HardwareManager:
 
     def start_voc_priming(self):      self.sensors.start_priming()
     def are_voc_sensors_ready(self):  return self.sensors.are_ready()
-    def warmup_remaining(self):       return self.sensors.warmup_remaining()  # ← ADDED
+    def warmup_remaining(self):       return self.sensors.warmup_remaining()
 
     def read_all_sensor_data(self, sl, progress_cb=None):
         return self.sensors.read_all_data(sl, progress_cb=progress_cb)
 
-    def generate_sensor_csv(self, d): return self.sensors.generate_csv(d)
+    def generate_sensor_csv(self, d, sensor_list=None):   # ← FIXED
+        return self.sensors.generate_csv(d, sensor_list)
 
     def start_camera_preview(self):   self.camera.start_preview()
     def stop_camera_preview(self):    self.camera.stop_preview()
