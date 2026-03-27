@@ -42,6 +42,7 @@ class AppController:
     def cancel_wifi_connect(self):
         self._wifi_cancel.set()
 
+
     # ── Navigation ────────────────────────────────────────────────────────────
 
     def go_to_home(self):
@@ -57,6 +58,7 @@ class AppController:
                 )
         self.sm.current = 'home'
 
+
     # ── Boot flow ─────────────────────────────────────────────────────────────
 
     def start_pairing_screen(self):
@@ -66,6 +68,7 @@ class AppController:
             Thread(target=self.scan_for_known_device, daemon=True).start()
         else:
             screen.show_qr()
+
 
     # ── BLE scan / auto-connect ───────────────────────────────────────────────
 
@@ -118,9 +121,6 @@ class AppController:
             if self._wifi_cancel.is_set():
                 return
 
-            # notify_enable_hotspot() intentionally NOT called here —
-            # no BLE GATT server is running in the known-device path,
-            # the call was a silent no-op. UI prompt is the only signal.
             wait         = WIFI_FIRST_HOTSPOT_WAIT if attempt == 1 else WIFI_RETRY_INTERVAL
             retries_left = WIFI_RETRY_LIMIT - attempt
             Clock.schedule_once(
@@ -145,16 +145,18 @@ class AppController:
                 self._current_ssid         = ssid
                 self.dm.update_last_connected(blemac)
 
-                # Deliver Pi IP + device_id to phone — DHCP can assign a
-                # different IP each session. Phone verifies device_id to
-                # reject connections from unknown/duplicate Pi devices.
                 pi_ip = self.dm.network.get_local_ip()
                 if pi_ip:
-                    wifi_posted = self.dm.network.post_ip_via_wifi(pi_ip)
-                    time.sleep(3 if wifi_posted else 6)
+                    # ── FIX: background retry — Pi goes home immediately,
+                    #    retry loop keeps posting every 10s until phone has
+                    #    a live listener (returns 200) instead of ghost (503)
+                    Thread(
+                        target=self.dm.network.post_ip_via_wifi,
+                        args=(pi_ip,),
+                        daemon=True
+                    ).start()
                 else:
                     print("[CONTROLLER] Could not get local IP — phone may not navigate")
-                    time.sleep(3)
 
                 self.dm.start_heartbeat_after_wifi(
                     on_disconnected=self.on_phone_disconnected
@@ -179,6 +181,7 @@ class AppController:
     def rescan_for_devices(self):
         self.sm.get_screen('pairing').show_scanning()
         Thread(target=self.scan_for_known_device, daemon=True).start()
+
 
     # ── New BLE pairing flow ──────────────────────────────────────────────────
 
@@ -278,13 +281,22 @@ class AppController:
                 self._wifi_connected       = True
                 self._current_ssid         = ssid
                 self.dm.update_last_connected(blemac)
+
                 pi_ip = self.dm.network.get_local_ip()
                 if pi_ip:
-                    wifi_posted = self.dm.network.post_ip_via_wifi(pi_ip)
+                    # ── FIX: background retry — Pi does not block waiting
+                    #    for phone. Retry loop posts every 10s until phone's
+                    #    live listener responds 200 (ghost socket returns 503)
+                    Thread(
+                        target=self.dm.network.post_ip_via_wifi,
+                        args=(pi_ip,),
+                        daemon=True
+                    ).start()
+                    # BLE fallback still fires for fast-path
                     self.dm.network.send_ip_to_phone(pi_ip)
-                    time.sleep(3 if wifi_posted else 8)
                 else:
-                    time.sleep(3)
+                    print("[CONTROLLER] Could not get local IP — phone may not navigate")
+
                 self.dm.network.stop_ble()
                 self.dm.start_heartbeat_after_wifi(
                     on_disconnected=self.on_phone_disconnected
@@ -307,6 +319,7 @@ class AppController:
     def stop_ble_pairing(self):
         self.dm.network.stop_ble()
         self.sm.get_screen('pairing').show_qr()
+
 
     # ── Device management ─────────────────────────────────────────────────────
 
@@ -364,6 +377,7 @@ class AppController:
         self.sm.current            = 'pairing'
         Clock.schedule_once(lambda dt: self.start_pairing_screen(), 0.3)
 
+
     # ── Test / sensor flow ────────────────────────────────────────────────────
 
     def start_test(self):
@@ -410,7 +424,6 @@ class AppController:
             return
 
         self.current_test_data['image_path'] = image_path
-
         import config
         if config.USE_REAL_NETWORK:
             self.dm.pause_heartbeat()
@@ -432,8 +445,9 @@ class AppController:
                 Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
         else:
             self.current_test_data['food_type']       = 'Unknown'
-            self.current_test_data['sensors_to_read'] = ['MQ2', 'MQ3', 'MQ4', 'MQ5',
-                                                          'MQ6', 'MQ8', 'MQ9', 'MQ135', 'MQ136']
+            self.current_test_data['sensors_to_read'] = [
+                'MQ2', 'MQ3', 'MQ4', 'MQ5', 'MQ6', 'MQ8', 'MQ9', 'MQ135', 'MQ136'
+            ]
             self.delete_image(image_path)
             Clock.schedule_once(lambda dt: self.proceed_to_reading(), 0)
 
