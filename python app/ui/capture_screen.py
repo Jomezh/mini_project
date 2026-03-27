@@ -1,3 +1,5 @@
+# ui/capture_screen.py
+
 from kivy.uix.screenmanager import Screen
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -13,7 +15,7 @@ class CaptureScreen(Screen):
         self.controller         = None
         self.preview_event      = None
         self._preview_scheduled = False
-        self._ready_poll        = None   # polls camera until preview_active=True
+        self._ready_poll        = None
         self._build_ui()
 
     def _build_ui(self):
@@ -87,7 +89,6 @@ class CaptureScreen(Screen):
         if not self.controller:
             return
 
-        # Stop any existing preview/poll cleanly
         self._stop_ready_poll()
         if self.preview_event:
             self.preview_event.cancel()
@@ -96,30 +97,38 @@ class CaptureScreen(Screen):
         self.status_label.text  = 'Starting camera...'
         self.status_label.color = (1.0, 0.75, 0.3, 1)
 
-        # Kick off the background camera start (non-blocking)
         self.controller.dm.hardware.start_camera_preview()
 
-        # Poll until preview_active=True, then start the frame clock
+        # Poll every 200 ms until CameraManager._starting clears
+        # and preview_active is set (or both cleared = failure)
         self._ready_poll = Clock.schedule_interval(self._poll_camera_ready, 0.2)
 
     def _poll_camera_ready(self, dt):
         if not self.controller:
             return False
+
         cam = self.controller.dm.hardware.camera   # CameraManager instance
-        if cam.is_preview_ready():
+
+        # ── Success: _starting cleared + preview_active set ────────────────
+        if cam.preview_active and not cam._starting:
             self._stop_ready_poll()
             self.status_label.text  = 'Position food item in frame'
             self.status_label.color = (0.7, 0.7, 0.7, 1)
-            self.preview_event = Clock.schedule_interval(self.update_preview, 1.0 / 10)
+            self.preview_event = Clock.schedule_interval(
+                self.update_preview, 1.0 / 10
+            )
             print("[CAPTURE] Camera ready — preview clock started")
             return False
-        # Still starting — check if it failed (both flags cleared = error)
+
+        # ── Failure: _starting cleared but preview_active never set ────────
         if not cam._starting and not cam.preview_active:
             self._stop_ready_poll()
             self.status_label.text  = 'Camera unavailable — tap Back and retry'
             self.status_label.color = (1, 0.3, 0.3, 1)
             print("[CAPTURE] Camera failed to start")
             return False
+
+        # Still starting (_starting=True) — keep polling
 
     def _stop_ready_poll(self):
         if self._ready_poll:
