@@ -1,7 +1,10 @@
+# hardware/camera_manager.py
+
 import os
 import time
 import threading
 from datetime import datetime
+
 
 try:
     from picamera2 import Picamera2
@@ -9,6 +12,7 @@ try:
 except ImportError:
     HAS_CAMERA = False
     print("[CAMERA] picamera2 not available")
+
 
 from kivy.graphics.texture import Texture
 
@@ -20,20 +24,15 @@ class CameraManager:
     CAPTURE_WIDTH  = 2592
     CAPTURE_HEIGHT = 1944
 
-    # Camera fd release time between close() and next open()
-    # Raspberry Pi camera stack needs ~1s to fully release
     _RELEASE_DELAY = 1.2
 
     def __init__(self):
         self.camera          = None
         self.current_texture = None
-        self._lock           = threading.Lock()   # guards frame reads
-        self._state_lock     = threading.Lock()   # guards state transitions
+        self._lock           = threading.Lock()
+        self._state_lock     = threading.Lock()
         self._initialized    = False
         self._last_error     = None
-
-        # Single source of truth for camera state — never read preview_active
-        # directly; always go through _state_lock to avoid races
         self._state          = 'idle'
         # States: idle | starting | previewing | capturing | stopping
 
@@ -41,7 +40,15 @@ class CameraManager:
 
     @property
     def preview_active(self):
+        """True only when camera is fully running and serving frames."""
         return self._state == 'previewing'
+
+    @property
+    def _starting(self):
+        """True while the background start thread is running.
+        Exposed so capture_screen._poll_camera_ready can distinguish
+        'still starting' from 'failed to start'."""
+        return self._state == 'starting'
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -60,7 +67,6 @@ class CameraManager:
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     def _hard_close(self, cam):
-        """Close a Picamera2 instance, suppressing all errors."""
         if cam is None:
             return
         try:
@@ -91,19 +97,18 @@ class CameraManager:
                 return
             if self._state in ('capturing', 'stopping'):
                 print(f"[CAMERA] start_preview() deferred — waiting for {self._state}")
-                # Schedule a retry after current operation finishes
                 threading.Thread(
                     target=self._deferred_start_preview,
                     daemon=True
                 ).start()
                 return
-            self._state = 'starting'
+            self._state = 'starting'   # ← set synchronously so _starting
+                                       #   property is True before poll fires
 
         self._last_error = None
         threading.Thread(target=self._start_preview_worker, daemon=True).start()
 
     def _deferred_start_preview(self):
-        """Wait for capturing/stopping to finish, then start preview."""
         deadline = time.time() + 10.0
         while time.time() < deadline:
             with self._state_lock:
@@ -128,9 +133,8 @@ class CameraManager:
             cam.start()
 
             with self._state_lock:
-                # Abort if something else took over while we were starting
                 if self._state != 'starting':
-                    print(f"[CAMERA] Preview worker aborted — state changed to {self._state}")
+                    print(f"[CAMERA] Preview worker aborted — state={self._state}")
                     self._hard_close(cam)
                     return
                 self.camera = cam
@@ -167,7 +171,7 @@ class CameraManager:
 
     def get_preview_texture(self):
         if not HAS_CAMERA or self._state != 'previewing':
-            return self.current_texture   # return last good frame if available
+            return self.current_texture
 
         with self._lock:
             cam = self.camera
@@ -176,11 +180,13 @@ class CameraManager:
             try:
                 frame   = cam.capture_array("main")
                 h, w, _ = frame.shape
+                # Flip vertically for OpenGL coordinate system (origin = bottom-left)
                 flipped = frame[::-1, :, :].copy()
-                texture = Texture.create(size=(w, h), colorfmt='bgr')
+                # RGB888 → colorfmt='rgb'  (was 'bgr' — caused R/B channel swap)
+                texture = Texture.create(size=(w, h), colorfmt='rgb')
                 texture.blit_buffer(
                     flipped.tobytes(),
-                    colorfmt='bgr', bufferfmt='ubyte'
+                    colorfmt='rgb', bufferfmt='ubyte'
                 )
                 self.current_texture = texture
                 return texture
@@ -201,12 +207,10 @@ class CameraManager:
             if self._state == 'capturing':
                 print("[CAMERA] Capture already in progress")
                 return None
-            # Stash preview camera reference — we'll close it properly
             preview_cam  = self.camera
             self.camera  = None
             self._state  = 'capturing'
 
-        # ── Step 1: close preview outside the lock ────────────────────────────
         if preview_cam is not None:
             print("[CAMERA] Stopping preview for capture...")
             self._hard_close(preview_cam)
@@ -221,7 +225,6 @@ class CameraManager:
 
         cam = None
         try:
-            # ── Step 2: open in still mode ────────────────────────────────────
             cam = Picamera2()
             cfg = cam.create_still_configuration(
                 main={
@@ -231,7 +234,7 @@ class CameraManager:
             )
             cam.configure(cfg)
             cam.start()
-            time.sleep(2.0)          # auto-exposure settle
+            time.sleep(2.0)
             cam.capture_file(filename)
             print(f"[CAMERA] Captured: {filename}")
             return filename
@@ -242,10 +245,8 @@ class CameraManager:
             return None
 
         finally:
-            # ── Step 3: always close capture camera, reset to idle ────────────
             self._hard_close(cam)
             with self._state_lock:
                 self.camera = None
                 self._state = 'idle'
             print("[CAMERA] Capture done — state reset to idle")
-            # Preview can now be restarted by the caller if needed
