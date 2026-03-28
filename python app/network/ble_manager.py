@@ -2,15 +2,15 @@
 BLE GATT peripheral server for MiniK.
 
 Roles:
-  - Peripheral: advertises as MiniK-XXXXXX, hosts GATT service
-    Phone connects, writes SSID/password/BLE-MAC → Pi reads credentials
-    Pi writes IP + device_id back → phone reads them
+- Peripheral: advertises as MiniK-XXXXXX, hosts GATT service
+  Phone connects, writes SSID/password/BLE-MAC → Pi reads credentials
+  Pi writes IP + device_id back → phone reads them
 
-  - Central (scan): uses bleak to scan for known phone MACs on boot
+- Central (scan): uses bleak to scan for known phone MACs on boot
 
 Requirements:
-    pip install bleak bless
-    sudo apt install bluetooth bluez
+  pip install bleak bless
+  sudo apt install bluetooth bluez
 """
 
 import asyncio
@@ -61,9 +61,9 @@ class BLEManager:
         self.device_id = device_id
         self.ble_name  = f"MiniK-{device_id[-6:]}"
 
-        self._server         = None
-        self._loop           = None
-        self._bg_thread      = None
+        self._server    = None
+        self._loop      = None
+        self._bg_thread = None
 
         self._creds          = {}
         self._outgoing       = {}
@@ -72,7 +72,6 @@ class BLEManager:
         self._connected_clients = set()
         self._connection_lock   = threading.Lock()
 
-
     # ── Public API ────────────────────────────────────────────────────────────
 
     def start_advertising(self):
@@ -80,7 +79,7 @@ class BLEManager:
 
     def start_ble_advertising(self) -> bool:
         try:
-            self._loop = asyncio.new_event_loop()
+            self._loop      = asyncio.new_event_loop()
             self._bg_thread = threading.Thread(
                 target=self._run_event_loop,
                 daemon=True,
@@ -110,25 +109,20 @@ class BLEManager:
 
         if received:
             result = dict(self._creds)
-            print(f"[BLE] Credentials received: "
-                  f"SSID='{result.get('ssid')}' "
-                  f"from '{result.get('ble_name')}'")
+            print(
+                f"[BLE] Credentials received: "
+                f"SSID='{result.get('ssid')}' "
+                f"from '{result.get('ble_name')}'"
+            )
             return result
 
         print("[BLE] Pairing wait timeout")
         return None
 
     def send_ip_to_phone(self, ip_address: str) -> bool:
-        """
-        Set the IP characteristic and start a retry-notify loop.
-        Retries up to 5× with 1.5s gaps — handles Android BLE dropping
-        during the 25s hotspot-wait quiet period. The phone will receive
-        it by attempt 2–3 once it reconnects or subscribes.
-        """
         try:
             self._outgoing['ip'] = ip_address
             print(f"[BLE] IP characteristic set: {ip_address}")
-
             if self._server and self._loop:
                 asyncio.run_coroutine_threadsafe(
                     self._notify_ip_with_retry(ip_address), self._loop
@@ -188,8 +182,13 @@ class BLEManager:
                          known_macs: list,
                          known_names: list,
                          timeout: int = 10) -> dict | None:
-        print(f"[BLE] Scanning {timeout}s for "
-              f"{len(known_macs)} known device(s)...")
+        print(f"[BLE] Scanning {timeout}s for {len(known_macs)} known device(s)...")
+        # FIX Bug 6: stop any running GATT server before scanning —
+        # bless + bleak fight over the BT adapter if both run simultaneously
+        if self._server:
+            print("[BLE] Stopping GATT server before scan to free BT adapter")
+            self.stop()
+
         try:
             loop   = asyncio.new_event_loop()
             result = loop.run_until_complete(
@@ -201,13 +200,11 @@ class BLEManager:
             print(f"[BLE] Scan error: {e}")
             return None
 
-
     # ── Event Loop ────────────────────────────────────────────────────────────
 
     def _run_event_loop(self):
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
-
 
     # ── GATT Server Setup ─────────────────────────────────────────────────────
 
@@ -231,8 +228,7 @@ class BLEManager:
 
         for uuid in _WRITABLE_CHARS:
             await self._server.add_new_characteristic(
-                GATT_SERVICE_UUID,
-                uuid,
+                GATT_SERVICE_UUID, uuid,
                 GATTCharacteristicProperties.write,
                 None,
                 GATTAttributePermissions.writeable
@@ -240,8 +236,7 @@ class BLEManager:
 
         for uuid in _READABLE_CHARS:
             await self._server.add_new_characteristic(
-                GATT_SERVICE_UUID,
-                uuid,
+                GATT_SERVICE_UUID, uuid,
                 (GATTCharacteristicProperties.read |
                  GATTCharacteristicProperties.notify),
                 None,
@@ -251,26 +246,24 @@ class BLEManager:
         await self._server.start()
         await asyncio.sleep(_GATT_READY_DELAY)
 
-        print(f"[BLE] GATT server ready — "
-              f"{len(_WRITABLE_CHARS)} writable + "
-              f"{len(_READABLE_CHARS)} readable characteristics registered")
+        print(
+            f"[BLE] GATT server ready — "
+            f"{len(_WRITABLE_CHARS)} writable + "
+            f"{len(_READABLE_CHARS)} readable characteristics registered"
+        )
         print(f"[BLE] Monitor: sudo btmon | grep -E 'Connect|Address'")
-
 
     # ── Connection Tracking ───────────────────────────────────────────────────
 
     def _on_client_connect(self, client_mac: str):
         with self._connection_lock:
             self._connected_clients.add(client_mac)
-        print(f"[BLE] ✓ Phone connected: {client_mac}  "
-              f"(total: {len(self._connected_clients)})")
+        print(f"[BLE] ✓ Phone connected: {client_mac} (total: {len(self._connected_clients)})")
 
     def _on_client_disconnect(self, client_mac: str):
         with self._connection_lock:
             self._connected_clients.discard(client_mac)
-        print(f"[BLE] ✗ Phone disconnected: {client_mac}  "
-              f"(remaining: {len(self._connected_clients)})")
-
+        print(f"[BLE] ✗ Phone disconnected: {client_mac} (remaining: {len(self._connected_clients)})")
 
     # ── GATT Callbacks ────────────────────────────────────────────────────────
 
@@ -289,12 +282,11 @@ class BLEManager:
         if key == 'password' and len(text) > 64: return
 
         self._creds[key] = text
-        print(f"[BLE] ← Received {key}: "
-              f"{'*' * len(text) if key == 'password' else text}")
+        print(f"[BLE] ← Received {key}: {'*' * len(text) if key == 'password' else text}")
 
         got  = len(self._creds)
         need = len(_REQUIRED_CREDS)
-        print(f"[BLE]   Credentials: {got}/{need} received")
+        print(f"[BLE] Credentials: {got}/{need} received")
 
         if _REQUIRED_CREDS.issubset(self._creds.keys()):
             print("[BLE] ✓ All credentials received")
@@ -325,43 +317,26 @@ class BLEManager:
             if result:
                 print(f"[BLE] ✓ Notified characteristic: ...{char_uuid[-4:]}")
             else:
-                print(f"[BLE] ✗ Notify returned False for ...{char_uuid[-4:]} "
-                      f"(phone may not be subscribed yet)")
+                print(f"[BLE] ✗ Notify returned False for ...{char_uuid[-4:]} (phone may not be subscribed yet)")
         except Exception as e:
             print(f"[BLE] Notify error ({char_uuid[-4:]}): {e}")
 
     async def _notify_ip_with_retry(self, ip_address: str):
-        """
-        Retry IP notify up to 5× with 1.5s gaps.
-
-        Why: Android BLE goes quiet during the 25s hotspot-wait window and
-        may drop the GATT connection. By the time WiFi is up, the phone
-        reconnects — but it takes 2–4s to re-subscribe to notifications.
-        Retrying ensures the IP lands once the phone is ready.
-        """
         for attempt in range(1, 6):
-            # First attempt fires quickly; subsequent ones wait 1.5s
             await asyncio.sleep(0.5 if attempt == 1 else 1.5)
-
             if not self._server:
                 print("[BLE] Server gone — stopping IP notify retries")
                 return
-
             try:
-                result = self._server.update_value(
-                    GATT_SERVICE_UUID, CHAR_IP_UUID
-                )
+                result = self._server.update_value(GATT_SERVICE_UUID, CHAR_IP_UUID)
                 if result:
                     print(f"[BLE] ✓ IP notify succeeded on attempt {attempt}")
                     return
-                print(f"[BLE] IP notify returned False "
-                      f"attempt {attempt}/5 — retrying...")
+                print(f"[BLE] IP notify returned False attempt {attempt}/5 — retrying...")
             except Exception as e:
                 print(f"[BLE] IP notify error attempt {attempt}: {e}")
 
-        print("[BLE] IP notify exhausted 5 attempts — "
-              "phone will fall back to reading characteristic directly")
-
+        print("[BLE] IP notify exhausted 5 attempts — phone will fall back to reading characteristic directly")
 
     # ── BLE Scan ──────────────────────────────────────────────────────────────
 
@@ -371,10 +346,9 @@ class BLEManager:
                           timeout: int) -> dict | None:
         from bleak import BleakScanner
 
-        known_macs_upper  = {m.upper() for m in known_macs  if m}
+        known_macs_upper  = {m.upper() for m in known_macs if m}
         known_names_lower = {n.lower() for n in known_names if n}
-
-        found_device = None
+        found_device      = None
 
         def detection_callback(device, advertisement_data):
             nonlocal found_device
@@ -402,10 +376,7 @@ class BLEManager:
                         except Exception:
                             pass
 
-            mac_match  = mac in known_macs_upper
-            name_match = name.lower() in known_names_lower
-
-            if mac_match or name_match:
+            if mac in known_macs_upper or name.lower() in known_names_lower:
                 print(f"[BLE] ✓ Found known device: '{name}' ({device.address})")
                 found_device = {'mac': device.address, 'name': name or ''}
 
