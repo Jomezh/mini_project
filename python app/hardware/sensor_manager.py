@@ -62,7 +62,7 @@ CLEAN_AIR_RATIO = {
     'MQ4':   4.4, 'MQ5':   6.5, 'MQ6': 10.0, 'MQ8': 70.0, 'MQ9': 9.9,
 }
 
-# FIX: DHT11 reads in a separate pass after SPI closes
+# DHT11 reads in a separate pass after SPI closes
 _DHT_SAMPLES  = 5
 _DHT_INTERVAL = 2.0   # DHT11 spec minimum interval between reads
 
@@ -94,7 +94,8 @@ class SensorManager:
 
 
         try:
-            self._dht = adafruit_dht.DHT11(getattr(board, f'D{DHT_PIN_NUM}'), use_pulseio=False)
+            # FIX: removed use_pulseio=False — default mode matches working test app
+            self._dht = adafruit_dht.DHT11(getattr(board, f'D{DHT_PIN_NUM}'))
         except Exception as e:
             print(f"[SENSORS] ⚠ DHT11 init failed: {e}")
 
@@ -339,7 +340,10 @@ class SensorManager:
                 print(f"[SENSORS] DHT11 returned None values (attempt {attempt + 1}/3)")
             except RuntimeError as e:
                 print(f"[SENSORS] DHT11 RuntimeError attempt {attempt + 1}/3: {e}")
-                time.sleep(2.0)   # FIX: was 0.5s — DHT11 spec minimum is 2s
+            # FIX: sleep ALWAYS between attempts regardless of error or None values
+            # DHT11 physically needs 2s minimum — was only sleeping on RuntimeError
+            if attempt < 2:
+                time.sleep(2.0)
         print("[SENSORS] DHT11 failed after 3 retries")
         return None, None
 
@@ -365,7 +369,7 @@ class SensorManager:
         spi = self._open_spi()
 
         try:
-            # FIX: DHT11 removed from this loop — SPI DMA disrupts adafruit_dht
+            # DHT11 removed from this loop — SPI DMA disrupts adafruit_dht
             # bit-bang timing causing consistent RuntimeError → all-zero readings
             print(f"[SENSORS] Sampling MQ {N_SAMPLES} × {SAMPLE_DELAY}s")
             for i in range(N_SAMPLES):
@@ -386,8 +390,7 @@ class SensorManager:
             self._close_spi(spi)
             print("[SENSORS] SPI closed")
 
-        # FIX: DHT11 reads happen here, after SPI is fully closed
-        # adafruit_dht bit-banging needs uninterrupted GPIO timing
+        # DHT11 reads happen here, after SPI is fully closed
         print(f"[SENSORS] Reading DHT11 ({_DHT_SAMPLES} samples × {_DHT_INTERVAL}s)...")
         for i in range(_DHT_SAMPLES):
             t, h = self._read_dht()
