@@ -95,7 +95,7 @@ class SensorManager:
 
         try:
             # FIX: removed use_pulseio=False — default mode matches working test app
-            self._dht = adafruit_dht.DHT11(getattr(board, f'D{DHT_PIN_NUM}'))
+            self._dht = adafruit_dht.DHT11(getattr(board, f'D{DHT_PIN_NUM}'), use_pulseio=False)
         except Exception as e:
             print(f"[SENSORS] ⚠ DHT11 init failed: {e}")
 
