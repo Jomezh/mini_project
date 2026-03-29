@@ -3,6 +3,7 @@ import os
 import csv
 import json
 import math
+import subprocess
 from datetime import datetime
 import config
 
@@ -64,7 +65,7 @@ CLEAN_AIR_RATIO = {
 
 # DHT11 reads in a separate pass after SPI closes
 _DHT_SAMPLES  = 5
-_DHT_INTERVAL = 2.0   # DHT11 spec minimum interval between reads
+_DHT_INTERVAL = 2.0
 
 
 
@@ -73,7 +74,7 @@ class SensorManager:
 
     def __init__(self):
         self._priming_start = None
-        self._dht           = None
+        self._dht           = None   # kept for cleanup() compatibility
         self._spi_bus       = None
         self._spi_dev       = None
         self._cal           = None
@@ -92,13 +93,10 @@ class SensorManager:
         except Exception as e:
             print(f"[SENSORS] ⚠ GPIO setup failed: {e}")
 
-
-        try:
-            # FIX: removed use_pulseio=False — default mode matches working test app
-            self._dht = adafruit_dht.DHT11(getattr(board, f'D{DHT_PIN_NUM}'), use_pulseio=False)
-        except Exception as e:
-            print(f"[SENSORS] ⚠ DHT11 init failed: {e}")
-
+        # FIX: DHT11 object no longer initialized here — libgpiod/PulseIn fails
+        # when adafruit_dht is constructed in a daemon thread on Pi Zero 2W.
+        # Reads are done via subprocess instead (see _read_dht), which is proven
+        # to work since the standalone dht_test.py script succeeds.
 
         try:
             self._spi_bus, self._spi_dev = self._detect_spi()
@@ -108,7 +106,6 @@ class SensorManager:
             print(f"[SENSORS] ⚠ SPI detect failed: {e}")
             print(f"[SENSORS]   Ensure 'dtoverlay=spi1-1cs' is in /boot/config.txt")
             print(f"[SENSORS]   Will retry on first sensor read")
-
 
         self._cal = self._load_calibration()
 
@@ -174,7 +171,6 @@ class SensorManager:
                     f"[SENSORS] SPI unavailable: {e}\n"
                     f"Check: dtoverlay=spi1-1cs in /boot/config.txt, then reboot."
                 ) from e
-
 
         spi = spidev.SpiDev()
         spi.open(self._spi_bus, self._spi_dev)
@@ -268,7 +264,6 @@ class SensorManager:
             except Exception:
                 continue
 
-
             if low_signal:
                 raws = [raw]
                 spi  = self._open_spi()
@@ -328,20 +323,36 @@ class SensorManager:
 
 
     def _read_dht(self):
-        if self._dht is None:
-            print("[SENSORS] DHT11 not initialized — skipping")
-            return None, None
+        # FIX: adafruit_dht object construction fails when called from a daemon
+        # thread on Pi Zero 2W (libgpiod PulseIn backend requires main thread).
+        # Subprocess approach is used instead — proven to work via dht_test.py.
+        script = (
+            f"import board, adafruit_dht, time; "
+            f"d = adafruit_dht.DHT11(board.D{DHT_PIN_NUM}); "
+            f"time.sleep(0.5); "
+            f"print(d.temperature, d.humidity); "
+            f"d.exit()"
+        )
         for attempt in range(3):
             try:
-                t = self._dht.temperature
-                h = self._dht.humidity
-                if t is not None and h is not None:
-                    return float(t), float(h)
-                print(f"[SENSORS] DHT11 returned None values (attempt {attempt + 1}/3)")
-            except RuntimeError as e:
-                print(f"[SENSORS] DHT11 RuntimeError attempt {attempt + 1}/3: {e}")
-            # FIX: sleep ALWAYS between attempts regardless of error or None values
-            # DHT11 physically needs 2s minimum — was only sleeping on RuntimeError
+                result = subprocess.run(
+                    ['python3', '-c', script],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    parts = result.stdout.strip().split()
+                    if len(parts) == 2:
+                        return float(parts[0]), float(parts[1])
+                print(
+                    f"[SENSORS] DHT11 subprocess attempt {attempt + 1}/3 failed: "
+                    f"{result.stderr.strip()}"
+                )
+            except subprocess.TimeoutExpired:
+                print(f"[SENSORS] DHT11 subprocess timeout attempt {attempt + 1}/3")
+            except Exception as e:
+                print(f"[SENSORS] DHT11 subprocess error attempt {attempt + 1}/3: {e}")
             if attempt < 2:
                 time.sleep(2.0)
         print("[SENSORS] DHT11 failed after 3 retries")
@@ -369,8 +380,6 @@ class SensorManager:
         spi = self._open_spi()
 
         try:
-            # DHT11 removed from this loop — SPI DMA disrupts adafruit_dht
-            # bit-bang timing causing consistent RuntimeError → all-zero readings
             print(f"[SENSORS] Sampling MQ {N_SAMPLES} × {SAMPLE_DELAY}s")
             for i in range(N_SAMPLES):
                 for ch, name in enumerate(MCP1_CHANNELS):
@@ -390,7 +399,7 @@ class SensorManager:
             self._close_spi(spi)
             print("[SENSORS] SPI closed")
 
-        # DHT11 reads happen here, after SPI is fully closed
+        # DHT11 reads after SPI is fully closed — no interference
         print(f"[SENSORS] Reading DHT11 ({_DHT_SAMPLES} samples × {_DHT_INTERVAL}s)...")
         for i in range(_DHT_SAMPLES):
             t, h = self._read_dht()
