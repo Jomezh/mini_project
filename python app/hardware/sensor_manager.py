@@ -7,6 +7,7 @@ from datetime import datetime
 import config
 
 
+
 if config.IS_RASPBERRY_PI:
     import RPi.GPIO as GPIO
     import spidev
@@ -14,10 +15,12 @@ if config.IS_RASPBERRY_PI:
     import adafruit_dht
 
 
+
 MOSFET_PIN   = 26
 CS_MCP1      = 5
 CS_MCP2      = 6
 DHT_PIN_NUM  = 4
+
 
 
 VREF         = 3.3
@@ -28,11 +31,14 @@ R_LOWER      = 10000.0
 DIVIDER_GAIN = (R_UPPER + R_LOWER) / R_LOWER   # 3.0
 
 
+
 DEFAULT_WARMUP_SECS = 30
+
 
 
 N_SAMPLES    = 30
 SAMPLE_DELAY = 1.0
+
 
 
 MCP1_CHANNELS = ['MQ2', 'MQ3', 'MQ4', 'MQ5', 'MQ6', 'MQ8', 'MQ9', 'MQ135']
@@ -40,7 +46,9 @@ MCP2_CHANNELS = ['MQ136']
 ALL_MQ        = MCP1_CHANNELS + MCP2_CHANNELS
 
 
+
 _SPI_CANDIDATES = [(0, 1), (1, 0), (0, 0)]
+
 
 
 BASELINE_RATIO_TOLERANCE = 15.0
@@ -48,13 +56,20 @@ LOW_SIGNAL_THRESHOLD     = 50
 LOW_SIGNAL_STABLE_RANGE  = 5
 
 
+
 CLEAN_AIR_RATIO = {
     'MQ135': 3.6, 'MQ136': 3.4, 'MQ2': 9.8,  'MQ3': 60.0,
     'MQ4':   4.4, 'MQ5':   6.5, 'MQ6': 10.0, 'MQ8': 70.0, 'MQ9': 9.9,
 }
 
+# FIX: DHT11 reads in a separate pass after SPI closes
+_DHT_SAMPLES  = 5
+_DHT_INTERVAL = 2.0   # DHT11 spec minimum interval between reads
+
+
 
 class SensorManager:
+
 
     def __init__(self):
         self._priming_start = None
@@ -64,7 +79,9 @@ class SensorManager:
         self._cal           = None
         self._initialized   = False
 
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
+
 
     def initialize(self):
         try:
@@ -75,10 +92,12 @@ class SensorManager:
         except Exception as e:
             print(f"[SENSORS] ⚠ GPIO setup failed: {e}")
 
+
         try:
             self._dht = adafruit_dht.DHT11(getattr(board, f'D{DHT_PIN_NUM}'))
         except Exception as e:
             print(f"[SENSORS] ⚠ DHT11 init failed: {e}")
+
 
         try:
             self._spi_bus, self._spi_dev = self._detect_spi()
@@ -89,7 +108,9 @@ class SensorManager:
             print(f"[SENSORS]   Ensure 'dtoverlay=spi1-1cs' is in /boot/config.txt")
             print(f"[SENSORS]   Will retry on first sensor read")
 
+
         self._cal = self._load_calibration()
+
 
     def _detect_spi(self):
         for bus, dev in _SPI_CANDIDATES:
@@ -102,6 +123,7 @@ class SensorManager:
             f"No spidev found. Available: {available or 'none'}.\n"
             f"Add 'dtoverlay=spi1-1cs' to /boot/config.txt and reboot."
         )
+
 
     def _load_calibration(self):
         cal_path = os.path.join(
@@ -126,6 +148,7 @@ class SensorManager:
             print(f"[SENSORS]   Falling back to {DEFAULT_WARMUP_SECS}s timer warmup")
         return None
 
+
     def cleanup(self):
         self._mosfet_off()
         if self._dht:
@@ -135,7 +158,9 @@ class SensorManager:
         except Exception: pass
         print("[SENSORS] Cleanup done")
 
+
     # ── SPI ───────────────────────────────────────────────────────────────────
+
 
     def _open_spi(self):
         if self._spi_bus is None or self._spi_dev is None:
@@ -149,6 +174,7 @@ class SensorManager:
                     f"Check: dtoverlay=spi1-1cs in /boot/config.txt, then reboot."
                 ) from e
 
+
         spi = spidev.SpiDev()
         spi.open(self._spi_bus, self._spi_dev)
         spi.no_cs        = True
@@ -156,11 +182,14 @@ class SensorManager:
         spi.mode         = 0b00
         return spi
 
+
     def _close_spi(self, spi):
         try: spi.close()
         except Exception: pass
 
+
     # ── ADC ───────────────────────────────────────────────────────────────────
+
 
     def _read_adc(self, spi, cs_pin, channel):
         GPIO.output(cs_pin, GPIO.LOW)
@@ -168,6 +197,7 @@ class SensorManager:
         result = spi.xfer2(cmd)
         GPIO.output(cs_pin, GPIO.HIGH)
         return ((result[1] & 3) << 8) | result[2]
+
 
     def _adc_to_rs(self, adc_raw):
         if adc_raw <= 0:
@@ -177,6 +207,7 @@ class SensorManager:
         if v_ao <= 0.0 or v_ao >= VCC_MQ:
             return float('nan')
         return (VCC_MQ - v_ao) / v_ao * RL_KΩ
+
 
     def _read_raw(self, name):
         spi = self._open_spi()
@@ -191,12 +222,15 @@ class SensorManager:
             self._close_spi(spi)
         return self._adc_to_rs(raw), raw
 
+
     # ── Warmup ────────────────────────────────────────────────────────────────
+
 
     def _get_warmup_secs(self):
         if self._cal:
             return self._cal.get('warmup_sec', DEFAULT_WARMUP_SECS)
         return DEFAULT_WARMUP_SECS
+
 
     def start_priming(self):
         if self._priming_start is None:
@@ -206,6 +240,7 @@ class SensorManager:
             print(f"[SENSORS] MOSFET ON — warming up "
                   f"{self._get_warmup_secs()}s ({src})")
 
+
     def are_ready(self):
         if self._priming_start is None:
             return False
@@ -214,6 +249,7 @@ class SensorManager:
         if self._cal is None:
             return True
         return self._all_sensors_at_baseline()
+
 
     def _all_sensors_at_baseline(self):
         if not self._cal:
@@ -230,6 +266,7 @@ class SensorManager:
                 rs, raw = self._read_raw(name)
             except Exception:
                 continue
+
 
             if low_signal:
                 raws = [raw]
@@ -259,19 +296,23 @@ class SensorManager:
                     return False
         return True
 
+
     def _ratio_ok(self, rs, r0, name):
         current_ratio  = rs / r0
         expected_ratio = CLEAN_AIR_RATIO.get(name, 1.0)
         dev_pct        = abs(current_ratio - expected_ratio) / expected_ratio * 100.0
         return dev_pct < BASELINE_RATIO_TOLERANCE
 
+
     def _warmup_elapsed(self):
         if self._priming_start is None:
             return 0.0
         return time.time() - self._priming_start
 
+
     def warmup_remaining(self):
         return max(0.0, self._get_warmup_secs() - self._warmup_elapsed())
+
 
     def _mosfet_off(self):
         try:
@@ -281,24 +322,30 @@ class SensorManager:
         except Exception:
             pass
 
+
     # ── DHT11 ─────────────────────────────────────────────────────────────────
 
+
     def _read_dht(self):
-        if self._dht is None:                          # ← ADDED guard
+        if self._dht is None:
             print("[SENSORS] DHT11 not initialized — skipping")
             return None, None
-        for _ in range(3):
+        for attempt in range(3):
             try:
                 t = self._dht.temperature
                 h = self._dht.humidity
                 if t is not None and h is not None:
                     return float(t), float(h)
-            except RuntimeError:
-                time.sleep(0.5)
+                print(f"[SENSORS] DHT11 returned None values (attempt {attempt + 1}/3)")
+            except RuntimeError as e:
+                print(f"[SENSORS] DHT11 RuntimeError attempt {attempt + 1}/3: {e}")
+                time.sleep(2.0)   # FIX: was 0.5s — DHT11 spec minimum is 2s
         print("[SENSORS] DHT11 failed after 3 retries")
         return None, None
 
+
     # ── Main read ─────────────────────────────────────────────────────────────
+
 
     def read_all_data(self, sensor_list, progress_cb=None):
         remaining = self.warmup_remaining()
@@ -314,11 +361,13 @@ class SensorManager:
             if self._spi_bus is not None
             else "[SENSORS] Opening SPI (lazy detect)..."
         )
-        print(f"[SENSORS] Reading: {mq_to_read} + DHT11")
+        print(f"[SENSORS] Reading: {mq_to_read}")
         spi = self._open_spi()
 
         try:
-            print(f"[SENSORS] Sampling {N_SAMPLES} × {SAMPLE_DELAY}s")
+            # FIX: DHT11 removed from this loop — SPI DMA disrupts adafruit_dht
+            # bit-bang timing causing consistent RuntimeError → all-zero readings
+            print(f"[SENSORS] Sampling MQ {N_SAMPLES} × {SAMPLE_DELAY}s")
             for i in range(N_SAMPLES):
                 for ch, name in enumerate(MCP1_CHANNELS):
                     if name in mq_to_read:
@@ -329,10 +378,6 @@ class SensorManager:
                     raw['MQ136'].append(
                         self._adc_to_rs(self._read_adc(spi, CS_MCP2, 0))
                     )
-                t, h = self._read_dht()
-                if t is not None:
-                    raw['Temperature'].append(t)
-                    raw['Humidity'].append(h)
                 if progress_cb:
                     progress_cb(i + 1, N_SAMPLES)
                 if i < N_SAMPLES - 1:
@@ -340,6 +385,23 @@ class SensorManager:
         finally:
             self._close_spi(spi)
             print("[SENSORS] SPI closed")
+
+        # FIX: DHT11 reads happen here, after SPI is fully closed
+        # adafruit_dht bit-banging needs uninterrupted GPIO timing
+        print(f"[SENSORS] Reading DHT11 ({_DHT_SAMPLES} samples × {_DHT_INTERVAL}s)...")
+        for i in range(_DHT_SAMPLES):
+            t, h = self._read_dht()
+            if t is not None:
+                raw['Temperature'].append(t)
+                raw['Humidity'].append(h)
+                print(f"[SENSORS] DHT11 sample {i + 1}: {t}°C  {h}%")
+            if i < _DHT_SAMPLES - 1:
+                time.sleep(_DHT_INTERVAL)
+
+        if not raw['Temperature']:
+            print("[SENSORS] ⚠ DHT11 returned no valid readings — check wiring on GPIO 4")
+        else:
+            print(f"[SENSORS] DHT11 done — {len(raw['Temperature'])} valid samples")
 
         self._mosfet_off()
 
@@ -360,7 +422,9 @@ class SensorManager:
         print(f"[SENSORS] Done — {len(features)} features computed")
         return {'raw_samples': raw, 'features': features}
 
+
     # ── CSV ───────────────────────────────────────────────────────────────────
+
 
     def generate_csv(self, data, sensor_list=None):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
