@@ -4,6 +4,7 @@ import csv
 import json
 import math
 import subprocess
+import sys
 from datetime import datetime
 import config
 
@@ -74,7 +75,7 @@ class SensorManager:
 
     def __init__(self):
         self._priming_start = None
-        self._dht           = None   # kept for cleanup() compatibility
+        self._dht           = None
         self._spi_bus       = None
         self._spi_dev       = None
         self._cal           = None
@@ -93,10 +94,8 @@ class SensorManager:
         except Exception as e:
             print(f"[SENSORS] ⚠ GPIO setup failed: {e}")
 
-        # FIX: DHT11 object no longer initialized here — libgpiod/PulseIn fails
-        # when adafruit_dht is constructed in a daemon thread on Pi Zero 2W.
-        # Reads are done via subprocess instead (see _read_dht), which is proven
-        # to work since the standalone dht_test.py script succeeds.
+        # DHT11 object not initialized here — adafruit_dht fails in daemon thread.
+        # Reads done via subprocess using sys.executable (same venv).
 
         try:
             self._spi_bus, self._spi_dev = self._detect_spi()
@@ -323,9 +322,9 @@ class SensorManager:
 
 
     def _read_dht(self):
-        # FIX: adafruit_dht object construction fails when called from a daemon
-        # thread on Pi Zero 2W (libgpiod PulseIn backend requires main thread).
-        # Subprocess approach is used instead — proven to work via dht_test.py.
+        # FIX: uses sys.executable so subprocess runs inside the same venv
+        # where adafruit_dht is installed — bare 'python3' resolves to system
+        # interpreter which does not have the package
         script = (
             f"import board, adafruit_dht, time; "
             f"d = adafruit_dht.DHT11(board.D{DHT_PIN_NUM}); "
@@ -336,7 +335,7 @@ class SensorManager:
         for attempt in range(3):
             try:
                 result = subprocess.run(
-                    ['python3', '-c', script],
+                    [sys.executable, '-c', script],   # FIX: was 'python3'
                     capture_output=True,
                     text=True,
                     timeout=10
