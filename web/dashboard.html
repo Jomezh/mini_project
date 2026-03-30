@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dashboard — Admin Panel</title>
+    <link rel="stylesheet" href="style.css" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="sidebar">
+      <h2>Admin Panel</h2>
+      <a href="dashboard.html" class="active">📊 Dashboard</a>
+      <a href="feedback.html">💬 User Feedback</a>
+      <a href="#" onclick="logout()">🚪 Logout</a>
+    </div>
+
+    <div class="content">
+      <div class="topbar">
+        <h1>Dashboard</h1>
+        <span id="adminEmail" class="admin-label"></span>
+      </div>
+
+      <div class="cards">
+        <div class="card">
+          <h3>Total Feedback</h3>
+          <p id="totalFeedback">—</p>
+        </div>
+        <div class="card">
+          <h3>Pending</h3>
+          <p id="pendingCount">—</p>
+        </div>
+        <div class="card">
+          <h3>Resolved</h3>
+          <p id="resolvedCount">—</p>
+        </div>
+      </div>
+
+      <div class="quick-links">
+        <h2>Quick Access</h2>
+        <div class="link-cards">
+          <a href="feedback.html" class="link-card">
+            <span class="link-icon">💬</span>
+            <span>User Feedback</span>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Firebase Compat SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
+    <script src="firebase.js"></script>
+    <script src="auth-guard.js"></script>
+
+    <script>
+      auth.onAuthStateChanged((user) => {
+        if (user) {
+          document.getElementById("adminEmail").textContent =
+            "Logged in as: " + user.email;
+          loadStats();
+        }
+      });
+
+      function loadStats() {
+        firebase
+          .firestore()
+          .collection("reports")
+          .get()
+          .then((snap) => {
+            let pending = 0,
+              resolved = 0;
+            snap.forEach((doc) => {
+              doc.data().status === "resolved" ? resolved++ : pending++;
+            });
+            document.getElementById("totalFeedback").textContent = snap.size;
+            document.getElementById("pendingCount").textContent = pending;
+            document.getElementById("resolvedCount").textContent = resolved;
+          })
+          .catch((e) => console.error("Stats error:", e));
+      }
+    </script>
+  </body>
+</html>

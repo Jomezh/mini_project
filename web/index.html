@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Food Spoilage Detection — Login</title>
+    <link rel="stylesheet" href="style.css" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body class="login-page">
+    <div id="loginSection">
+      <h2>Admin Login</h2>
+      <p style="font-size: 0.82rem; margin-bottom: 12px">
+        Food Spoilage Detection System
+      </p>
+
+      <input type="email" id="email" placeholder="Admin Email" />
+      <input type="password" id="password" placeholder="Password" />
+
+      <button id="loginBtn">Login</button>
+      <p id="loginError"></p>
+    </div>
+
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
+    <script src="firebase.js"></script>
+
+    <script>
+      // Always sign out any existing session — admin must log in every time
+      auth.signOut();
+
+      async function checkAdminByEmail(email) {
+        try {
+          const snap = await firebase
+            .firestore()
+            .collection("admin")
+            .where("email", "==", email)
+            .limit(1)
+            .get();
+          return !snap.empty;
+        } catch (e) {
+          console.error("Admin check failed:", e);
+          return false;
+        }
+      }
+
+      document
+        .getElementById("loginBtn")
+        .addEventListener("click", async () => {
+          const email = document.getElementById("email").value.trim();
+          const password = document.getElementById("password").value;
+          const errorEl = document.getElementById("loginError");
+          const btn = document.getElementById("loginBtn");
+
+          errorEl.textContent = "";
+
+          if (!email || !password) {
+            errorEl.textContent = "Please enter your email and password.";
+            return;
+          }
+
+          btn.textContent = "Checking...";
+          btn.disabled = true;
+
+          try {
+            const cred = await auth.signInWithEmailAndPassword(email, password);
+            const isAdmin = await checkAdminByEmail(cred.user.email);
+
+            if (!isAdmin) {
+              await auth.signOut();
+              errorEl.textContent =
+                "Access denied. You are not an authorized admin.";
+              btn.textContent = "Login";
+              btn.disabled = false;
+              return;
+            }
+
+            window.location.href = "dashboard.html";
+          } catch (err) {
+            errorEl.textContent =
+              err.code === "auth/user-not-found" ||
+              err.code === "auth/wrong-password" ||
+              err.code === "auth/invalid-credential"
+                ? "Invalid email or password."
+                : "Login failed: " + err.message;
+            btn.textContent = "Login";
+            btn.disabled = false;
+          }
+        });
+
+      document.getElementById("password").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") document.getElementById("loginBtn").click();
+      });
+    </script>
+  </body>
+</html>
