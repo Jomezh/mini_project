@@ -1,6 +1,6 @@
 ﻿# Mini Project
 
-## Team memebers:
+## Team members:
     - Alan Vincent
     - Anase Benny
     - Janpaul Benny
