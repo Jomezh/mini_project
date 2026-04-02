@@ -1,0 +1,782 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Food Spoilage Detection</title>
+
+    <script src="https://www.gstatic.com/firebasejs/10.11.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.11.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore-compat.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;700&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <link rel="stylesheet" href="style.css" />
+    <script>
+      (function() {
+        const storedTheme = localStorage.getItem('theme');
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (storedTheme === 'dark' || (!storedTheme && prefersDark)) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <!-- LOGIN -->
+    <div id="login-page">
+      <div class="login-center-card">
+        <div class="brand-icon" style="margin: 0 auto 1.5rem">🧪</div>
+        <h1 class="login-heading">Food Spoilage Detection System</h1>
+        <div class="fg">
+          <label>Email Address</label>
+          <input
+            type="email"
+            id="email"
+            placeholder="your@email.com"
+            autocomplete="email"
+          />
+        </div>
+        <div class="fg">
+          <label>Password</label>
+          <input
+            type="password"
+            id="password"
+            placeholder="••••••••"
+            autocomplete="current-password"
+          />
+        </div>
+        <div class="err" id="login-error"></div>
+        <button class="btn-login" id="login-btn">Log In &rarr;</button>
+      </div>
+    </div>
+
+    <!-- APP -->
+    <div id="app-page">
+      <nav>
+        <div class="nav-brand">
+          <div class="nav-icon">🧪</div>
+          <span class="nav-title">Food Spoilage Detection</span>
+        </div>
+        <div class="nav-r">
+          <div class="nav-user">
+            <div class="avatar" id="nav-avatar">U</div>
+            <span id="nav-email">—</span>
+          </div>
+          <button class="theme-toggle" id="theme-toggle" title="Toggle Dark/Light Mode">
+            <svg id="theme-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+          </button>
+          <button class="btn-out" id="logout-btn">
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+            >
+              <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            Log Out
+          </button>
+        </div>
+      </nav>
+
+      <div class="hero">
+        <div class="hero-inner">
+          <div class="hero-tag">&#x1F52C; Inspection Dashboard</div>
+          <h1>Food Spoilage Detection</h1>
+          <p>
+            Click any inspection card to view full sensor details and download
+            your PDF report.
+          </p>
+        </div>
+      </div>
+
+      <div class="stats-strip">
+        <div class="stat blue fade-up">
+          <div class="stat-lbl">Total Tests</div>
+          <div class="stat-num" id="stat-total">—</div>
+        </div>
+        <div class="stat green fade-up">
+          <div class="stat-lbl">Fresh</div>
+          <div class="stat-num" id="stat-fresh">—</div>
+        </div>
+        <div class="stat amber fade-up">
+          <div class="stat-lbl">Half Fresh</div>
+          <div class="stat-num" id="stat-half">—</div>
+        </div>
+        <div class="stat red fade-up">
+          <div class="stat-lbl">Spoiled</div>
+          <div class="stat-num" id="stat-spoiled">—</div>
+        </div>
+      </div>
+
+      <div class="content">
+        <div class="bar">
+          <input
+            type="text"
+            id="search-box"
+            placeholder="&#x1F50D;  Search by food type…"
+          />
+          <select id="filter-sel">
+            <option value="">All Statuses</option>
+            <option value="Fresh">Fresh</option>
+            <option value="HalfFresh">Half Fresh</option>
+            <option value="Spoiled">Spoiled</option>
+          </select>
+        </div>
+
+        <div id="loading-state" class="loading-state">
+          <div class="spin"></div>
+          <p>Loading your inspection records…</p>
+        </div>
+
+        <div id="empty-state" class="empty-state" style="display: none">
+          <div class="empty-icon">&#x1F50D;</div>
+          <p>No inspection records found.</p>
+        </div>
+
+        <div class="cards-grid" id="cards-grid"></div>
+      </div>
+    </div>
+
+    <!-- MODAL -->
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal" id="modal">
+        <div class="modal-header">
+          <div>
+            <div class="modal-food" id="m-food">—</div>
+            <div class="modal-ts">
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 6v6l4 2" />
+              </svg>
+              <span id="m-ts">—</span>
+            </div>
+          </div>
+          <button class="close-btn" id="modal-close">&#x2715;</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="modal-status" id="m-status-box">
+            <div class="status-icon" id="m-status-icon">✅</div>
+            <div class="status-detail">
+              <strong id="m-status-label">—</strong>
+              <p id="m-status-desc">—</p>
+            </div>
+          </div>
+
+          <div class="section-title">Test Information</div>
+          <div class="info-grid">
+            <div class="info-cell">
+              <div class="ilabel">Food Type</div>
+              <div class="ivalue" id="m-foodtype">—</div>
+            </div>
+            <div class="info-cell">
+              <div class="ilabel">Device ID</div>
+              <div class="ivalue" id="m-device">—</div>
+            </div>
+            <div class="info-cell">
+              <div class="ilabel">Username</div>
+              <div class="ivalue" id="m-username">—</div>
+            </div>
+            <div class="info-cell">
+              <div class="ilabel">Report ID</div>
+              <div class="ivalue" id="m-id" style="font-size: 0.71rem">—</div>
+            </div>
+          </div>
+
+          <div class="section-title">Sensor Readings</div>
+          <table class="sensor-table">
+            <thead>
+              <tr>
+                <th>Sensor</th>
+                <th>Mean</th>
+                <th>Max</th>
+                <th>Std Dev</th>
+                <th>Level</th>
+              </tr>
+            </thead>
+            <tbody id="m-sensor-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn-cancel" id="modal-close2">Close</button>
+          <button class="btn-pdf" id="btn-pdf-dl">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+            >
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Download PDF Report
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const firebaseConfig = {
+        apiKey: "AIzaSyBZgPMBhlgqjp0IQlpRir1PJnk4RrcME84",
+        authDomain: "foodapp-401b2.firebaseapp.com",
+        databaseURL:
+          "https://foodapp-401b2-default-rtdb.asia-southeast1.firebasedatabase.app",
+        projectId: "foodapp-401b2",
+        storageBucket: "foodapp-401b2.firebasestorage.app",
+        messagingSenderId: "138750698992",
+        appId: "1:138750698992:web:8b61b62112a13833296935",
+        measurementId: "G-56VJYVE0HE",
+      };
+
+      firebase.initializeApp(firebaseConfig);
+      const auth = firebase.auth();
+      const db = firebase.firestore();
+
+      const SENSORS = [
+        "MQ135",
+        "MQ136",
+        "MQ2",
+        "MQ3",
+        "MQ4",
+        "MQ5",
+        "MQ6",
+        "MQ8",
+        "MQ9",
+        "Humidity",
+        "Temperature",
+      ];
+      const FOOD_ICONS = {
+        beef: "🥩",
+        chicken: "🍗",
+        fish: "🐟",
+        pork: "🥓",
+        lamb: "🍖",
+        vegetable: "🥦",
+        fruit: "🍎",
+        milk: "🥛",
+        egg: "🥚",
+        bread: "🍞",
+      };
+
+      let allRecords = [];
+      let currentRec = null;
+
+      auth.onAuthStateChanged(async (user) => {
+        if (user) {
+          // Block admin accounts
+          try {
+            const adminSnap = await db
+              .collection("admin")
+              .where("email", "==", user.email)
+              .get();
+            if (!adminSnap.empty) {
+              await auth.signOut();
+              return;
+            }
+            const userSnap = await db
+              .collection("users")
+              .where("email", "==", user.email)
+              .get();
+            if (userSnap.empty) {
+              await auth.signOut();
+              return;
+            }
+          } catch (e) {}
+          showApp(user);
+          await loadRecords(user);
+        } else showLogin();
+      });
+
+      document.getElementById("login-btn").addEventListener("click", doLogin);
+      document.getElementById("password").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") doLogin();
+      });
+
+      async function doLogin() {
+        const email = document.getElementById("email").value.trim();
+        const pass = document.getElementById("password").value;
+        const err = document.getElementById("login-error");
+        err.textContent = "";
+        if (!email || !pass) {
+          err.textContent = "Please enter email and password.";
+          return;
+        }
+        try {
+          await auth.setPersistence(firebase.auth.Auth.Persistence.SESSION);
+          const cred = await auth.signInWithEmailAndPassword(email, pass);
+          // Check if this email belongs to admin collection — block if so
+          const adminSnap = await db
+            .collection("admin")
+            .where("email", "==", email)
+            .get();
+          if (!adminSnap.empty) {
+            await auth.signOut();
+            err.textContent =
+              "Admin accounts are not allowed to access this portal.";
+            return;
+          }
+          // Also check users collection — must exist as a regular user
+          const userSnap = await db
+            .collection("users")
+            .where("email", "==", email)
+            .get();
+          if (userSnap.empty) {
+            await auth.signOut();
+            err.textContent =
+              "No user account found. Please contact your administrator.";
+            return;
+          }
+        } catch (e) {
+          err.textContent =
+            {
+              "auth/user-not-found": "No account with this email.",
+              "auth/wrong-password": "Incorrect password.",
+              "auth/invalid-email": "Invalid email address.",
+              "auth/invalid-credential": "Invalid email or password.",
+              "auth/too-many-requests": "Too many attempts. Please wait.",
+            }[e.code] || "Login failed.";
+        }
+      }
+
+      document
+        .getElementById("logout-btn")
+        .addEventListener("click", () => auth.signOut());
+
+      document.getElementById("theme-toggle").addEventListener("click", () => {
+        const html = document.documentElement;
+        html.classList.add('theme-switching'); // optional transition class if needed
+        const isDark = html.classList.toggle("dark");
+        localStorage.setItem("theme", isDark ? "dark" : "light");
+      });
+
+      function showLogin() {
+        document.getElementById("login-page").style.display = "flex";
+        document.getElementById("app-page").style.display = "none";
+      }
+
+      function showApp(user) {
+        document.getElementById("login-page").style.display = "none";
+        document.getElementById("app-page").style.display = "block";
+        document.getElementById("nav-email").textContent = user.email;
+        document.getElementById("nav-avatar").textContent =
+          user.email[0].toUpperCase();
+      }
+
+      async function loadRecords(user) {
+        let username = user.email.split("@")[0];
+        try {
+          const snap = await db.collection("users").get();
+          snap.forEach((d) => {
+            if (d.data().email === user.email) username = d.data().username;
+          });
+        } catch (e) {}
+
+        const snap = await db
+          .collection("inspection")
+          .where("username", "==", username)
+          .get();
+        const records = [];
+        for (const doc of snap.docs) {
+          const insp = doc.data();
+          let sensor = {};
+          try {
+            const sd = await db.collection("sensor_data").doc(doc.id).get();
+            if (sd.exists) sensor = sd.data();
+          } catch (e) {}
+          records.push({ id: doc.id, inspection: insp, sensor });
+        }
+        records.sort(
+          (a, b) =>
+            (b.inspection.Time_Stamp?.seconds || 0) -
+            (a.inspection.Time_Stamp?.seconds || 0),
+        );
+        allRecords = records;
+        updateStats(records);
+        renderCards(records);
+      }
+
+      function updateStats(r) {
+        document.getElementById("stat-total").textContent = r.length;
+        document.getElementById("stat-fresh").textContent = r.filter(
+          (x) => x.inspection.Spoilage_Level === "Fresh",
+        ).length;
+        document.getElementById("stat-half").textContent = r.filter(
+          (x) => x.inspection.Spoilage_Level === "HalfFresh",
+        ).length;
+        document.getElementById("stat-spoiled").textContent = r.filter(
+          (x) => !["Fresh", "HalfFresh"].includes(x.inspection.Spoilage_Level),
+        ).length;
+      }
+
+      function renderCards(records) {
+        document.getElementById("loading-state").style.display = "none";
+        const grid = document.getElementById("cards-grid");
+        const empty = document.getElementById("empty-state");
+        grid.innerHTML = "";
+        if (!records.length) {
+          empty.style.display = "block";
+          return;
+        }
+        empty.style.display = "none";
+
+        records.forEach((rec, i) => {
+          const insp = rec.inspection;
+          const level = insp.Spoilage_Level || "Unknown";
+          const food = insp.food_type || "Unknown";
+          const ts = insp.Time_Stamp
+            ? new Date(insp.Time_Stamp.seconds * 1000)
+            : null;
+          const tsStr = ts
+            ? ts.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })
+            : "—";
+          const cls =
+            level === "Fresh"
+              ? "fresh"
+              : level === "HalfFresh"
+                ? "half"
+                : "spoiled";
+          const lbl = level === "HalfFresh" ? "Half Fresh" : level;
+          const icon = FOOD_ICONS[food.toLowerCase()] || "🧫";
+
+          const card = document.createElement("div");
+          card.className = `insp-card ${cls}`;
+          card.style.animationDelay = `${i * 0.06}s`;
+          card.innerHTML = `
+      <div class="card-top">
+        <div><div class="food-name">${food}</div></div>
+        <div class="food-icon">${icon}</div>
+      </div>
+      <span class="status-pill ${cls}">${lbl}</span>
+      <div class="card-meta">
+        <div class="meta-row">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          ${tsStr}
+        </div>
+        <div class="meta-row">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          ${insp.device_id || "—"}
+        </div>
+      </div>
+      <div class="card-footer">
+        <span class="view-btn">View Details &rarr;</span>
+        <span class="card-num">#${i + 1}</span>
+      </div>`;
+          card.addEventListener("click", () => openModal(rec));
+          grid.appendChild(card);
+        });
+      }
+
+      document
+        .getElementById("search-box")
+        .addEventListener("input", applyFilters);
+      document
+        .getElementById("filter-sel")
+        .addEventListener("change", applyFilters);
+
+      function applyFilters() {
+        const q = document.getElementById("search-box").value.toLowerCase();
+        const st = document.getElementById("filter-sel").value;
+        renderCards(
+          allRecords.filter(
+            (r) =>
+              (!q ||
+                (r.inspection.food_type || "").toLowerCase().includes(q)) &&
+              (!st || r.inspection.Spoilage_Level === st),
+          ),
+        );
+      }
+
+      function openModal(rec) {
+        currentRec = rec;
+        const insp = rec.inspection;
+        const level = insp.Spoilage_Level || "Unknown";
+        const food = insp.food_type || "Unknown";
+        const ts = insp.Time_Stamp
+          ? new Date(insp.Time_Stamp.seconds * 1000)
+          : null;
+        const tsStr = ts
+          ? ts.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })
+          : "—";
+        const cls =
+          level === "Fresh"
+            ? "fresh"
+            : level === "HalfFresh"
+              ? "half"
+              : "spoiled";
+        const lbl = level === "HalfFresh" ? "Half Fresh" : level;
+
+        document.getElementById("m-food").textContent = food;
+        document.getElementById("m-ts").textContent = tsStr;
+        document.getElementById("m-foodtype").textContent = food;
+        document.getElementById("m-device").textContent = insp.device_id || "—";
+        document.getElementById("m-username").textContent =
+          insp.username || "—";
+        document.getElementById("m-id").textContent = rec.id;
+
+        const box = document.getElementById("m-status-box");
+        box.className = `modal-status ${cls}`;
+        document.getElementById("m-status-icon").textContent =
+          level === "Fresh" ? "✅" : level === "HalfFresh" ? "⚠️" : "❌";
+        document.getElementById("m-status-label").textContent = lbl;
+        document.getElementById("m-status-desc").textContent =
+          level === "Fresh"
+            ? "The food appears fresh and is safe for consumption."
+            : level === "HalfFresh"
+              ? "Shows early spoilage signs. Use with caution or consume soon."
+              : "Likely spoiled. Do NOT consume. Dispose of it safely.";
+
+        const tbody = document.getElementById("m-sensor-tbody");
+        tbody.innerHTML = "";
+        const sensor = rec.sensor || {};
+        const means = SENSORS.map((s) =>
+          parseFloat(sensor[`${s}_mean`] || 0),
+        ).filter((v) => !isNaN(v));
+        const maxM = Math.max(...means, 1);
+
+        SENSORS.forEach((s) => {
+          const mean =
+            sensor[`${s}_mean`] !== undefined
+              ? Number(sensor[`${s}_mean`]).toFixed(4)
+              : "—";
+          const max =
+            sensor[`${s}_max`] !== undefined
+              ? Number(sensor[`${s}_max`]).toFixed(4)
+              : "—";
+          const std =
+            sensor[`${s}_std`] !== undefined
+              ? Number(sensor[`${s}_std`]).toFixed(4)
+              : "—";
+          const pct = Math.min(100, (parseFloat(mean) / maxM) * 100);
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+      <td><span class="sensor-name">${s}</span></td>
+      <td>${mean}</td><td>${max}</td><td>${std}</td>
+      <td><div class="bar-wrap"><div class="bar-fill" style="width:${pct}%"></div></div></td>`;
+          tbody.appendChild(tr);
+        });
+
+        document.getElementById("modal-overlay").classList.add("open");
+        document.body.style.overflow = "hidden";
+      }
+
+      function closeModal() {
+        document.getElementById("modal-overlay").classList.remove("open");
+        document.body.style.overflow = "";
+      }
+
+      document
+        .getElementById("modal-close")
+        .addEventListener("click", closeModal);
+      document
+        .getElementById("modal-close2")
+        .addEventListener("click", closeModal);
+      document
+        .getElementById("modal-overlay")
+        .addEventListener("click", (e) => {
+          if (e.target === e.currentTarget) closeModal();
+        });
+      document.getElementById("btn-pdf-dl").addEventListener("click", () => {
+        if (currentRec) generatePDF(currentRec);
+      });
+
+      function generatePDF(rec) {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({ unit: "mm", format: "a4" });
+        const insp = rec.inspection;
+        const sensor = rec.sensor || {};
+        const ts = insp.Time_Stamp
+          ? new Date(insp.Time_Stamp.seconds * 1000)
+          : new Date();
+        const tsStr = ts.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+        const food = insp.food_type || "Unknown";
+        const level = insp.Spoilage_Level || "—";
+        const device = insp.device_id || "—";
+        const user = insp.username || "—";
+        const W = 210, M = 20;
+        let y = 0;
+
+        // Clean white/light theme header
+        doc.setFillColor(248, 250, 252); // slate-50
+        doc.rect(0, 0, W, 45, "F");
+        
+        doc.setDrawColor(99, 102, 241); // indigo-500 line
+        doc.setLineWidth(1.5);
+        doc.line(0, 45, W, 45);
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9);
+        doc.setTextColor(99, 102, 241); // indigo-500
+        doc.text("FOOD SPOILAGE DETECTION SYSTEM", M, 18);
+
+        doc.setFontSize(24);
+        doc.setTextColor(15, 23, 42); // slate-900
+        doc.text("Inspection Report", M, 30);
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.setTextColor(100, 116, 139); // slate-500
+        doc.text(`Report ID: ${rec.id}`, M, 38);
+        doc.text(`Generated: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`, M + 80, 38);
+
+        y = 60;
+
+        // Status badge
+        const isFresh = level === "Fresh";
+        const isHalf = level === "HalfFresh";
+        
+        const sc = isFresh ? [16, 185, 129] : isHalf ? [245, 158, 11] : [239, 68, 68];
+        const sb = isFresh ? [209, 250, 229] : isHalf ? [254, 243, 199] : [254, 226, 226];
+        
+        doc.setFillColor(...sb);
+        doc.roundedRect(M, y, W - 2 * M, 24, 4, 4, "F");
+        doc.setDrawColor(...sc);
+        doc.setLineWidth(0.5);
+        doc.roundedRect(M, y, W - 2 * M, 24, 4, 4, "S");
+        
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(14);
+        doc.setTextColor(...sc);
+        const dlbl = isHalf ? "HALF FRESH" : level.toUpperCase();
+        doc.text(`Status: ${dlbl}`, W / 2, y + 15, { align: "center" });
+        y += 36;
+
+        // Section: Test Info
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        doc.setTextColor(15, 23, 42);
+        doc.text("TEST INFORMATION", M, y);
+        doc.setDrawColor(226, 232, 240); // slate-200
+        doc.setLineWidth(0.5);
+        doc.line(M, y + 3, W - M, y + 3);
+        y += 12;
+
+        const infos = [
+          ["Food Type", food.toUpperCase()],
+          ["Date & Time", tsStr],
+          ["Device ID", device],
+          ["Inspector", user],
+        ];
+        
+        infos.forEach(([lbl, val], i) => {
+          if (i % 2 === 0) {
+            doc.setFillColor(248, 250, 252);
+            doc.rect(M, y - 5, W - 2 * M, 12, "F");
+          }
+          const x1 = i % 2 === 0 ? M + 2 : W / 2 + 6;
+          const x2 = i % 2 === 0 ? M + 45 : W / 2 + 45;
+          
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.setTextColor(100, 116, 139);
+          doc.text(lbl, x1, y+2.5);
+          
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(9);
+          doc.setTextColor(15, 23, 42);
+          doc.text(String(val), x2, y+2.5);
+          
+          if (i % 2 === 1) y += 12;
+        });
+        y += 14;
+
+        // Section: Sensor Readings
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        doc.setTextColor(15, 23, 42);
+        doc.text("DETAILED SENSOR ANALYSIS", M, y);
+        doc.setDrawColor(226, 232, 240);
+        doc.line(M, y + 3, W - M, y + 3);
+        y += 12;
+
+        // Table header
+        doc.setFillColor(241, 245, 249); // slate-100
+        doc.roundedRect(M, y - 6, W - 2 * M, 10, 2, 2, "F");
+        const cx = [M + 4, M + 40, M + 80, M + 120, M + 160];
+        doc.setFontSize(8);
+        doc.setTextColor(71, 85, 105); // slate-600
+        ["SENSOR", "MEAN", "MAXIMUM", "STD DEV", "UNIT"].forEach((h, i) => doc.text(h, cx[i], y));
+        y += 8;
+
+        SENSORS.forEach((s, i) => {
+          if (i % 2 === 0) {
+            doc.setFillColor(248, 250, 252);
+            doc.rect(M, y - 4, W - 2 * M, 8, "F");
+          }
+          const mean = sensor[`${s}_mean`] !== undefined ? Number(sensor[`${s}_mean`]).toFixed(3) : "—";
+          const max = sensor[`${s}_max`] !== undefined ? Number(sensor[`${s}_max`]).toFixed(3) : "—";
+          const std = sensor[`${s}_std`] !== undefined ? Number(sensor[`${s}_std`]).toFixed(3) : "—";
+          const unit = s === "Temperature" ? "°C" : s === "Humidity" ? "%RH" : "ppm";
+          
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.setTextColor(99, 102, 241); // indigo-500
+          doc.text(s, cx[0], y+1);
+          
+          doc.setFont("helvetica", "normal");
+          doc.setTextColor(51, 65, 85); // slate-700
+          doc.text(String(mean), cx[1], y+1);
+          doc.text(String(max), cx[2], y+1);
+          doc.text(String(std), cx[3], y+1);
+          doc.setTextColor(100, 116, 139);
+          doc.text(unit, cx[4], y+1);
+          y += 8;
+        });
+        y += 10;
+
+        // Recommendation
+        doc.setFillColor(...sb);
+        doc.roundedRect(M, y, W - 2 * M, 24, 3, 3, "F");
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9);
+        doc.setTextColor(...sc);
+        doc.text("EXECUTIVE SUMMARY", M + 6, y + 8);
+        
+        const rtxt = isFresh
+            ? "The food sample exhibits baseline sensor values and appears completely fresh. It is safe for consumption and further storage under standard conditions."
+            : isHalf
+              ? "The sample shows elevated gas readings indicating the onset of spoilage. Use with caution, inspect manually, or consume immediately."
+              : "Critical threshold exceeded. The sample is severely spoiled. Do NOT consume. Immediate disposal is recommended to prevent cross-contamination.";
+              
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+        doc.setTextColor(71, 85, 105); // slate-600
+        doc.text(rtxt, M + 6, y + 15, { maxWidth: W - 2 * M - 12, lineHeightFactor: 1.4 });
+        
+        // Footer
+        doc.setDrawColor(226, 232, 240);
+        doc.line(M, 280, W - M, 280);
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(8);
+        doc.setTextColor(148, 163, 184); // slate-400
+        doc.text("Food Spoilage Detection System  ·  Official Automated Analysis Report", W / 2, 286, { align: "center" });
+
+        doc.save(
+          `FoodSpoilageReport_${food}_${ts.toISOString().slice(0, 10)}.pdf`,
+        );
+      }
+    </script>
+  </body>
+</html>
+
