@@ -21,7 +21,6 @@ class CameraTimeoutError(Exception):
     """
     Raised by capture_image() when the camera hangs instead of responding.
     Typically caused by a loose ribbon cable connection.
-    Callers should catch this and show a retry prompt.
     """
     pass
 
@@ -33,8 +32,10 @@ class CameraManager:
     CAPTURE_WIDTH  = 2592
     CAPTURE_HEIGHT = 1944
 
-    _RELEASE_DELAY   = 1.2
-    _CAPTURE_TIMEOUT = 15   # seconds — raise CameraTimeoutError if exceeded
+    _RELEASE_DELAY        = 1.2
+    _CAPTURE_TIMEOUT      = 15   # seconds before CameraTimeoutError on capture
+    _HARD_CLOSE_TIMEOUT   = 4    # seconds before giving up on cam.stop()/close()
+    _PREVIEW_INIT_TIMEOUT = 10   # seconds before preview init is abandoned
 
 
     def __init__(self):
@@ -58,8 +59,6 @@ class CameraManager:
 
     @property
     def _starting(self):
-        """Exposes the 'starting' state so capture_screen._poll_camera_ready
-        can distinguish 'still starting' from 'failed to start'."""
         return self._state == 'starting'
 
 
@@ -84,39 +83,40 @@ class CameraManager:
 
 
     def _hard_close(self, cam):
+        """
+        Closes a Picamera2 instance.
+
+        Runs each of cam.stop() and cam.close() in a daemon thread with
+        _HARD_CLOSE_TIMEOUT seconds. If the camera bus is dead (loose ribbon),
+        libcamera can block forever inside these calls — the thread is simply
+        abandoned after the timeout so the app never freezes.
+        """
         if cam is None:
             return
-        try:
-            cam.stop()
-        except Exception:
-            pass
-        try:
-            cam.close()
-        except Exception:
-            pass
+
+        def _do_close():
+            try:
+                cam.stop()
+            except Exception:
+                pass
+            try:
+                cam.close()
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_do_close, daemon=True)
+        t.start()
+        t.join(timeout=self._HARD_CLOSE_TIMEOUT)
+        if t.is_alive():
+            # Thread is stuck — camera bus is dead. Abandon it.
+            print("[CAMERA] _hard_close timed out — camera bus likely dead (ribbon?)")
 
 
-    def _set_state(self, state):
-        with self._state_lock:
-            old = self._state
-            self._state = state
-        if old != state:
-            print(f"[CAMERA] State: {old} → {state}")
-
-
-    def _run_with_timeout(self, fn, timeout, cam_holder):
+    def _run_with_timeout(self, fn, timeout, cam_holder=None):
         """
         Runs fn() in a daemon thread with a hard timeout.
-
-        fn()        — camera work to execute
-        timeout     — seconds before CameraTimeoutError is raised
-        cam_holder  — dict with key 'cam'; fn must write the Picamera2
-                      instance here as soon as it is created so the caller
-                      can attempt cleanup even after a timeout.
-
-        Returns fn's return value.
-        Raises CameraTimeoutError if the thread does not finish in time.
-        Re-raises any exception thrown inside fn.
+        cam_holder: optional dict with key 'cam' written by fn for cleanup.
+        Raises CameraTimeoutError on timeout, re-raises fn's exception otherwise.
         """
         result = {"value": None, "error": None, "done": False}
 
@@ -140,6 +140,14 @@ class CameraManager:
         if result["error"]:
             raise result["error"]
         return result["value"]
+
+
+    def _set_state(self, state):
+        with self._state_lock:
+            old = self._state
+            self._state = state
+        if old != state:
+            print(f"[CAMERA] State: {old} → {state}")
 
 
     # ── Preview ────────────────────────────────────────────────────────────────
@@ -177,19 +185,35 @@ class CameraManager:
 
 
     def _start_preview_worker(self):
-        cam = None
+        """
+        Opens the camera for preview. Each blocking libcamera call
+        (_PREVIEW_INIT_TIMEOUT seconds total) is covered by _run_with_timeout
+        so a stuck ribbon during init doesn't freeze the worker thread.
+        """
+        cam_holder = {"cam": None}
+
         try:
             time.sleep(self._RELEASE_DELAY)
-            cam = Picamera2()
-            cfg = cam.create_preview_configuration(
-                main={
-                    'size':   (self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT),
-                    'format': 'RGB888',
-                },
-                buffer_count=4
+
+            def _init_camera():
+                cam = Picamera2()
+                cam_holder["cam"] = cam
+                cfg = cam.create_preview_configuration(
+                    main={
+                        'size':   (self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT),
+                        'format': 'RGB888',
+                    },
+                    buffer_count=4
+                )
+                cam.configure(cfg)
+                cam.start()
+                return cam
+
+            cam = self._run_with_timeout(
+                _init_camera,
+                self._PREVIEW_INIT_TIMEOUT,
+                cam_holder,
             )
-            cam.configure(cfg)
-            cam.start()
 
             with self._state_lock:
                 if self._state != 'starting':
@@ -201,10 +225,18 @@ class CameraManager:
 
             print("[CAMERA] Preview started")
 
+        except CameraTimeoutError as e:
+            self._last_error = e
+            print(f"[CAMERA] Preview init timed out — ribbon loose? {e}")
+            self._hard_close(cam_holder["cam"])
+            with self._state_lock:
+                self.camera = None
+                self._state = 'idle'
+
         except Exception as e:
             self._last_error = e
             print(f"[CAMERA] Preview start error: {e}")
-            self._hard_close(cam)
+            self._hard_close(cam_holder["cam"])
             with self._state_lock:
                 self.camera = None
                 self._state = 'idle'
@@ -222,6 +254,7 @@ class CameraManager:
             self._state  = 'stopping'
 
         try:
+            # _hard_close now has its own timeout — won't block if ribbon is dead
             self._hard_close(cam)
         finally:
             self.current_texture = None
@@ -249,9 +282,23 @@ class CameraManager:
                 )
                 self.current_texture = texture
                 return texture
+
             except Exception as e:
-                print(f"[CAMERA] Frame error: {e}")
-                return self.current_texture
+                print(f"[CAMERA] Frame error (ribbon disconnected?): {e}")
+                # Mark the camera as dead so stop_preview() skips the
+                # hung cam object and state resets cleanly.
+                with self._state_lock:
+                    self.camera = None
+                    self._state = 'idle'
+                # Abandon the dead cam object in a daemon thread —
+                # _hard_close handles the timeout itself.
+                threading.Thread(
+                    target=self._hard_close,
+                    args=(cam,),
+                    daemon=True
+                ).start()
+                self.current_texture = None
+                return None
 
 
     def is_preview_ready(self):
@@ -268,14 +315,7 @@ class CameraManager:
     def capture_image(self):
         """
         Takes a still image and returns the saved file path.
-
-        Returns:
-            str  — absolute path to the captured JPEG on success.
-
-        Raises:
-            CameraTimeoutError — ribbon cable is loose / camera unresponsive.
-                                 Caller should show a retry prompt.
-            Exception          — any other camera hardware error.
+        Raises CameraTimeoutError if the camera hangs (loose ribbon).
         """
         with self._state_lock:
             if self._state == 'capturing':
@@ -297,14 +337,12 @@ class CameraManager:
         os.makedirs(captures_dir, exist_ok=True)
         filename = os.path.join(captures_dir, f"capture_{timestamp}.jpg")
 
-        # cam_holder lets the finally block close the camera even if
-        # _run_with_timeout raises before the daemon thread returns.
         cam_holder = {"cam": None}
 
         try:
             def _do_capture():
                 cam = Picamera2()
-                cam_holder["cam"] = cam         # expose early for cleanup
+                cam_holder["cam"] = cam
                 cfg = cam.create_still_configuration(
                     main={
                         'size':   (self.CAPTURE_WIDTH, self.CAPTURE_HEIGHT),
@@ -339,8 +377,6 @@ class CameraManager:
             raise
 
         finally:
-            # Best-effort cleanup — daemon thread may still hold the resource
-            # after a timeout, but this prevents leaks on normal errors.
             self._hard_close(cam_holder["cam"])
             with self._state_lock:
                 self.camera = None
