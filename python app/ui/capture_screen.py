@@ -70,7 +70,9 @@ class CaptureScreen(Screen):
         layout.add_widget(self.status_label)
         self.add_widget(layout)
 
+
     # ── Lifecycle ──────────────────────────────────────────────────────────────
+
 
     def on_enter(self):
         self.enable_capture()
@@ -83,7 +85,9 @@ class CaptureScreen(Screen):
         self._stop_ready_poll()
         self.stop_preview()
 
+
     # ── Camera Preview ─────────────────────────────────────────────────────────
+
 
     def start_preview(self):
         if not self.controller:
@@ -99,17 +103,14 @@ class CaptureScreen(Screen):
 
         self.controller.dm.hardware.start_camera_preview()
 
-        # Poll every 200 ms until CameraManager._starting clears
-        # and preview_active is set (or both cleared = failure)
         self._ready_poll = Clock.schedule_interval(self._poll_camera_ready, 0.2)
 
     def _poll_camera_ready(self, dt):
         if not self.controller:
             return False
 
-        cam = self.controller.dm.hardware.camera   # CameraManager instance
+        cam = self.controller.dm.hardware.camera
 
-        # ── Success: _starting cleared + preview_active set ────────────────
         if cam.preview_active and not cam._starting:
             self._stop_ready_poll()
             self.status_label.text  = 'Position food item in frame'
@@ -120,15 +121,12 @@ class CaptureScreen(Screen):
             print("[CAPTURE] Camera ready — preview clock started")
             return False
 
-        # ── Failure: _starting cleared but preview_active never set ────────
         if not cam._starting and not cam.preview_active:
             self._stop_ready_poll()
             self.status_label.text  = 'Camera unavailable — tap Back and retry'
             self.status_label.color = (1, 0.3, 0.3, 1)
             print("[CAPTURE] Camera failed to start")
             return False
-
-        # Still starting (_starting=True) — keep polling
 
     def _stop_ready_poll(self):
         if self._ready_poll:
@@ -156,7 +154,9 @@ class CaptureScreen(Screen):
             except Exception as e:
                 print(f"[CAPTURE] Stop preview error: {e}")
 
+
     # ── Button Handlers ────────────────────────────────────────────────────────
+
 
     def on_capture(self, instance):
         if not self.controller:
@@ -175,11 +175,13 @@ class CaptureScreen(Screen):
         self.stop_preview()
         self.manager.current = 'home'
 
+
     # ── State Control ──────────────────────────────────────────────────────────
+
 
     def disable_capture(self):
         self.capture_btn.disabled = True
-        self.status_label.text    = 'Sending to phone...'
+        self.status_label.text    = 'Capturing...'
         self.status_label.color   = (0.9, 0.9, 0.9, 1)
 
     def enable_capture(self):

@@ -3,10 +3,11 @@ from threading import Thread, Event
 import time
 import os
 
+
 WIFI_RETRY_LIMIT          = 3
 WIFI_RETRY_INTERVAL       = 10
-WIFI_FIRST_HOTSPOT_WAIT   = 25   # new pairing: user must manually enable hotspot
-AUTO_CONNECT_HOTSPOT_WAIT = 5    # FIX Bug 3: known device — hotspot is usually already starting
+WIFI_FIRST_HOTSPOT_WAIT   = 25
+AUTO_CONNECT_HOTSPOT_WAIT = 5
 
 
 class AppController:
@@ -39,7 +40,9 @@ class AppController:
     def cancel_wifi_connect(self):
         self._wifi_cancel.set()
 
+
     # ── Navigation ────────────────────────────────────────────────────────────
+
 
     def go_to_home(self):
         if self.current_connected_mac:
@@ -52,7 +55,6 @@ class AppController:
                 home.set_connected_device(match['ble_name'], match.get('ssid', ''))
                 self.sm.current = 'home'
             else:
-                # FIX Bug 4: was silently doing nothing, leaving UI frozen
                 print(
                     f"[CONTROLLER] go_to_home: MAC {self.current_connected_mac} "
                     f"not found in known_devices — forcing pairing screen"
@@ -66,7 +68,9 @@ class AppController:
             self.sm.current = 'pairing'
             Clock.schedule_once(lambda dt: self.start_pairing_screen(), 0.3)
 
+
     # ── Boot flow ─────────────────────────────────────────────────────────────
+
 
     def start_pairing_screen(self):
         screen = self.sm.get_screen('pairing')
@@ -76,7 +80,9 @@ class AppController:
         else:
             screen.show_qr()
 
+
     # ── BLE scan / auto-connect ───────────────────────────────────────────────
+
 
     def scan_for_known_device(self):
         try:
@@ -123,7 +129,6 @@ class AppController:
         name   = known_device['ble_name']
         self._wifi_cancel.clear()
 
-        # FIX Bug 2: fast-path — if Pi is already on the hotspot, skip all waits
         if self.dm.network.is_connected_to(ssid):
             pi_ip = self.dm.network.get_local_ip()
             if pi_ip:
@@ -144,7 +149,6 @@ class AppController:
                 Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                 return
 
-        # FIX Bug 1: start BLE advertising so notify_enable_hotspot actually reaches phone
         ble_started = self.dm.network.start_ble_advertising()
         if not ble_started:
             print("[CONTROLLER] BLE advertising failed — phone will not be prompted for hotspot")
@@ -154,10 +158,8 @@ class AppController:
                 if self._wifi_cancel.is_set():
                     return
 
-                # FIX Bug 1: notify phone to enable hotspot over BLE each attempt
                 self.dm.network.notify_enable_hotspot()
 
-                # FIX Bug 3: use shorter wait — hotspot is usually already starting
                 wait         = AUTO_CONNECT_HOTSPOT_WAIT if attempt == 1 else WIFI_RETRY_INTERVAL
                 retries_left = WIFI_RETRY_LIMIT - attempt
                 Clock.schedule_once(
@@ -192,7 +194,6 @@ class AppController:
                     else:
                         print("[CONTROLLER] Could not get local IP — phone may not navigate")
 
-                    # FIX Bug 1: clean up BLE after WiFi success
                     self.dm.network.stop_ble()
                     self.dm.start_heartbeat_after_wifi(
                         on_disconnected=self.on_phone_disconnected
@@ -200,7 +201,6 @@ class AppController:
                     Clock.schedule_once(lambda dt: self.go_to_home(), 0)
                     return
 
-            # FIX Bug 1: clean up BLE on final failure too
             self.dm.network.stop_ble()
             Clock.schedule_once(
                 lambda dt: self.sm.get_screen('pairing').show_qr(
@@ -224,7 +224,9 @@ class AppController:
         self.sm.get_screen('pairing').show_scanning()
         Thread(target=self.scan_for_known_device, daemon=True).start()
 
+
     # ── New BLE pairing flow ──────────────────────────────────────────────────
+
 
     def start_pairing(self):
         self.cancel_wifi_connect()
@@ -357,7 +359,9 @@ class AppController:
         self.dm.network.stop_ble()
         self.sm.get_screen('pairing').show_qr()
 
+
     # ── Device management ─────────────────────────────────────────────────────
+
 
     def reset_pairing(self):
         self.cancel_wifi_connect()
@@ -413,7 +417,9 @@ class AppController:
         self.sm.current = 'pairing'
         Clock.schedule_once(lambda dt: self.start_pairing_screen(), 0.3)
 
+
     # ── Test / sensor flow ────────────────────────────────────────────────────
+
 
     def start_test(self):
         if not self.dm.hardware.are_voc_sensors_ready():
@@ -474,12 +480,13 @@ class AppController:
                 Thread(target=self.wait_for_cnn_result, daemon=True).start()
             else:
                 self.dm.resume_heartbeat()
+                self.delete_image(image_path)
                 Clock.schedule_once(
                     lambda dt: screen.show_error("Failed to send image"), 0
                 )
                 Clock.schedule_once(lambda dt: screen.enable_capture(), 0)
         else:
-            self.current_test_data['food_type']      = 'Unknown'
+            self.current_test_data['food_type']       = 'Unknown'
             self.current_test_data['sensors_to_read'] = [
                 'MQ2', 'MQ3', 'MQ4', 'MQ5', 'MQ6', 'MQ8', 'MQ9', 'MQ135', 'MQ136'
             ]
