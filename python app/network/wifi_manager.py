@@ -241,7 +241,23 @@ class WiFiManager:
 
     def get_phone_ip(self) -> str:
         if self.phone_ip:
-            return self.phone_ip
+            # FIX: verify cached IP still matches the actual gateway before trusting it
+            try:
+                result = subprocess.run(
+                    ['ip', 'route', 'show', 'dev', 'wlan0'],
+                    capture_output=True, text=True, timeout=5
+                )
+                match = re.search(r'default via (\d+\.\d+\.\d+\.\d+)', result.stdout)
+                if match and match.group(1) == self.phone_ip:
+                    return self.phone_ip  # still valid
+                else:
+                    print(
+                        f"[WIFI] Cached phone IP {self.phone_ip} no longer matches "
+                        f"gateway — refreshing"
+                    )
+                    self.phone_ip = None  # fall through to re-discover
+            except Exception:
+                pass  # fall through to re-discover
 
 
         try:
@@ -437,12 +453,12 @@ class WiFiManager:
             print("[WIFI] requests not available — cannot send image")
             return False
 
-        print(f"[WIFI] Preparing to send image: {image_path}")  # ← NEW
+        print(f"[WIFI] Preparing to send image: {image_path}")
 
         url      = self._build_phone_url('upload/image')
         ping_url = self._build_phone_url('ping')
         if not url or not ping_url:
-            print(f"[WIFI] Cannot build phone URL — url={url} ping_url={ping_url}")  # ← FIX
+            print(f"[WIFI] Cannot build phone URL — url={url} ping_url={ping_url}")
             return False
 
 
@@ -507,7 +523,7 @@ class WiFiManager:
 
         url = self._build_phone_url('upload/csv')
         if not url:
-            print(f"[WIFI] Cannot build CSV URL — phone IP unknown")  # ← FIX (same pattern)
+            print("[WIFI] Cannot build CSV URL — phone IP unknown")
             return False
 
 
