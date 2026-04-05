@@ -1,5 +1,3 @@
-# hardware/camera_manager.py
-
 import os
 import time
 import threading
@@ -24,7 +22,9 @@ class CameraManager:
     CAPTURE_WIDTH  = 2592
     CAPTURE_HEIGHT = 1944
 
-    _RELEASE_DELAY = 1.2
+    _RELEASE_DELAY       = 1.2
+    _ERROR_RELEASE_DELAY = 3.5
+
 
     def __init__(self):
         self.camera          = None
@@ -34,21 +34,25 @@ class CameraManager:
         self._initialized    = False
         self._last_error     = None
         self._state          = 'idle'
+        self._had_error      = False
         # States: idle | starting | previewing | capturing | stopping
 
+
     # ── Properties ────────────────────────────────────────────────────────────
+
 
     @property
     def preview_active(self):
         return self._state == 'previewing'
 
+
     @property
     def _starting(self):
-        """Exposes the 'starting' state so capture_screen._poll_camera_ready
-        can distinguish 'still starting' from 'failed to start'."""
         return self._state == 'starting'
 
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
+
 
     def initialize(self):
         if not HAS_CAMERA:
@@ -57,12 +61,15 @@ class CameraManager:
         self._initialized = True
         print("[CAMERA] Initialized")
 
+
     def cleanup(self):
         self.stop_preview()
         self._initialized = False
         print("[CAMERA] Cleanup done")
 
+
     # ── Internal helpers ───────────────────────────────────────────────────────
+
 
     def _hard_close(self, cam):
         if cam is None:
@@ -76,6 +83,7 @@ class CameraManager:
         except Exception:
             pass
 
+
     def _set_state(self, state):
         with self._state_lock:
             old = self._state
@@ -83,7 +91,35 @@ class CameraManager:
         if old != state:
             print(f"[CAMERA] State: {old} → {state}")
 
+
+    # ── Public reset ──────────────────────────────────────────────────────────
+
+
+    def reset_camera(self):
+        """
+        Force-kill any lingering camera state and wait for libcamera to
+        fully release the pipeline. Call this after any capture error before
+        allowing the user to try again.
+        """
+        print("[CAMERA] Forcing hardware reset...")
+        with self._state_lock:
+            cam         = self.camera
+            self.camera = None
+
+        self._hard_close(cam)
+        self.current_texture = None
+        self._had_error      = True
+        self._last_error     = None
+
+        with self._state_lock:
+            self._state = 'idle'
+
+        time.sleep(self._ERROR_RELEASE_DELAY)
+        print("[CAMERA] Hardware reset complete — ready")
+
+
     # ── Preview ────────────────────────────────────────────────────────────────
+
 
     def start_preview(self):
         if not HAS_CAMERA or not self._initialized:
@@ -105,6 +141,7 @@ class CameraManager:
         self._last_error = None
         threading.Thread(target=self._start_preview_worker, daemon=True).start()
 
+
     def _deferred_start_preview(self):
         deadline = time.time() + 10.0
         while time.time() < deadline:
@@ -114,10 +151,14 @@ class CameraManager:
             time.sleep(0.2)
         self.start_preview()
 
+
     def _start_preview_worker(self):
         cam = None
         try:
-            time.sleep(self._RELEASE_DELAY)
+            delay = self._ERROR_RELEASE_DELAY if self._had_error else self._RELEASE_DELAY
+            self._had_error = False
+            time.sleep(delay)
+
             cam = Picamera2()
             cfg = cam.create_preview_configuration(
                 main={
@@ -141,11 +182,13 @@ class CameraManager:
 
         except Exception as e:
             self._last_error = e
+            self._had_error  = True
             print(f"[CAMERA] Preview start error: {e}")
             self._hard_close(cam)
             with self._state_lock:
                 self.camera = None
                 self._state = 'idle'
+
 
     def stop_preview(self):
         if not HAS_CAMERA:
@@ -165,6 +208,7 @@ class CameraManager:
             with self._state_lock:
                 self._state = 'idle'
             print("[CAMERA] Preview stopped")
+
 
     def get_preview_texture(self):
         if not HAS_CAMERA or self._state != 'previewing':
@@ -189,13 +233,17 @@ class CameraManager:
                 print(f"[CAMERA] Frame error: {e}")
                 return self.current_texture
 
+
     def is_preview_ready(self):
         return self._state == 'previewing'
+
 
     def get_last_error(self):
         return self._last_error
 
+
     # ── Capture ────────────────────────────────────────────────────────────────
+
 
     def capture_image(self):
         with self._state_lock:
@@ -237,6 +285,7 @@ class CameraManager:
         except Exception as e:
             print(f"[CAMERA] Capture error: {e}")
             self._last_error = e
+            self._had_error  = True
             return None
 
         finally:
