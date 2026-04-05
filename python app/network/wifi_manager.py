@@ -5,6 +5,7 @@ import threading
 import os
 import re
 
+
 try:
     import netifaces
     HAS_NETIFACES = True
@@ -12,12 +13,14 @@ except ImportError:
     HAS_NETIFACES = False
     print("[WIFI] netifaces not installed — pip install netifaces")
 
+
 try:
     import requests as reqlib
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
     print("[WIFI] requests not installed — pip install requests")
+
 
 
 class WiFiManager:
@@ -29,11 +32,14 @@ class WiFiManager:
     ML result arrives asynchronously via POST /result/ml_result from the app.
     """
 
+
     FLASK_PORT = 8765
     PHONE_PORT = 8080
 
+
     _frame_lock   = threading.Lock()
     _latest_frame: bytes = None
+
 
     def __init__(self):
         self.phone_ip        = None
@@ -47,29 +53,32 @@ class WiFiManager:
         self._flask_thread   = None
         self._flask_server   = None
         self._ip_retry_stop  = threading.Event()
-        # FIX Bug 4: signals connect() to stop polling when _do_connect aborts early
         self._connect_failed = threading.Event()
 
+
     # ── Frame buffer ───────────────────────────────────────────────────────
+
 
     @classmethod
     def set_snapshot_frame(cls, jpeg_bytes: bytes):
         with cls._frame_lock:
             cls._latest_frame = jpeg_bytes
 
+
     # ── WiFi Connection ────────────────────────────────────────────────────
+
 
     def connect(self, ssid: str, password: str = None) -> bool:
         print(f"[WIFI] Scheduling connection to '{ssid}' in 2s...")
-        self._connect_failed.clear()  # FIX Bug 4: reset abort flag before new attempt
+        self._connect_failed.clear()
         threading.Thread(
             target=self._do_connect,
             args=(ssid, password),
             daemon=True
         ).start()
 
+
         for _ in range(60):
-            # FIX Bug 4: exit immediately if _do_connect gave up
             if self._connect_failed.is_set():
                 print(f"[WIFI] _do_connect aborted early — stopping poll for '{ssid}'")
                 return False
@@ -82,12 +91,15 @@ class WiFiManager:
                 else:
                     print("[WIFI] Associated, waiting for DHCP...")
 
+
         print(f"[WIFI] Failed to connect+DHCP for '{ssid}' within 60s")
         return False
+
 
     def _do_connect(self, ssid: str, password: str = None):
         try:
             time.sleep(2)
+
 
             ssid_visible = False
             for scan_attempt in range(1, 4):
@@ -108,10 +120,12 @@ class WiFiManager:
                     if scan_attempt < 3:
                         time.sleep(8)
 
+
             if not ssid_visible:
                 print(f"[WIFI] '{ssid}' never appeared after 3 scans — aborting")
-                self._connect_failed.set()  # FIX Bug 4: wake up connect() poll loop
+                self._connect_failed.set()
                 return
+
 
             if password:
                 if self._profile_exists(ssid):
@@ -124,18 +138,22 @@ class WiFiManager:
                 cmd = ['nmcli', 'dev', 'wifi', 'connect', ssid, 'password', password]
                 print(f"[WIFI] Connecting to '{ssid}' with new password")
 
+
             elif self._profile_exists(ssid):
                 cmd = ['nmcli', 'con', 'up', ssid]
                 print(f"[WIFI] Bringing up saved profile for '{ssid}'")
 
+
             else:
                 print(f"[WIFI] No profile and no password for '{ssid}' — cannot connect")
-                self._connect_failed.set()  # FIX Bug 4: wake up connect() poll loop
+                self._connect_failed.set()
                 return
+
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             stdout = result.stdout.strip()
             stderr = result.stderr.strip()
+
 
             if 'successfully' in stdout.lower() or result.returncode == 0:
                 print(f"[WIFI] nmcli connected to '{ssid}'")
@@ -150,10 +168,12 @@ class WiFiManager:
                         capture_output=True, timeout=15
                     )
 
+
         except subprocess.TimeoutExpired:
             print("[WIFI] nmcli connect timeout")
         except Exception as e:
             print(f"[WIFI] nmcli error: {e}")
+
 
     def _profile_exists(self, ssid: str) -> bool:
         try:
@@ -165,6 +185,7 @@ class WiFiManager:
         except Exception:
             return False
 
+
     def is_connected_to(self, ssid: str) -> bool:
         try:
             result = subprocess.run(
@@ -175,7 +196,9 @@ class WiFiManager:
         except Exception:
             return False
 
+
     # ── IP Helpers ─────────────────────────────────────────────────────────
+
 
     def get_local_ip(self) -> str:
         try:
@@ -193,6 +216,7 @@ class WiFiManager:
         except Exception as e:
             print(f"[WIFI] ip addr show failed: {e}")
 
+
         if HAS_NETIFACES:
             try:
                 addrs = netifaces.ifaddresses('wlan0')
@@ -201,6 +225,7 @@ class WiFiManager:
                 return ip
             except Exception:
                 pass
+
 
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -213,9 +238,11 @@ class WiFiManager:
             print(f"[WIFI] Could not get local IP: {e}")
         return None
 
+
     def get_phone_ip(self) -> str:
         if self.phone_ip:
             return self.phone_ip
+
 
         try:
             result = subprocess.run(
@@ -233,6 +260,7 @@ class WiFiManager:
         except Exception as e:
             print(f"[WIFI] ip route failed: {e}")
 
+
         if HAS_NETIFACES:
             try:
                 gws = netifaces.gateways()
@@ -243,42 +271,42 @@ class WiFiManager:
             except Exception:
                 pass
 
+
         return None
 
+
     # ── IP Post (persistent retry) ─────────────────────────────────────────
+
 
     def post_ip_via_wifi(self, pi_ip: str, device_id: str = '',
                          max_attempts: int = 20,
                          retry_interval: int = 10) -> bool:
-        """
-        POST Pi IP to phone with persistent retry.
-        Phone response codes:
-          200 → listener registered, navigation triggered → STOP (success)
-          403 → device_id mismatch / wrong Pi             → STOP (fail)
-          503 → server alive but no listener yet (ghost)  → KEEP RETRYING
-          other / timeout / refused                       → KEEP RETRYING
-        """
         if not HAS_REQUESTS:
             print("[WIFI] requests not available — cannot post IP via WiFi")
             return False
+
 
         phone_ip = self.get_phone_ip()
         if not phone_ip:
             print("[WIFI] Phone IP unknown — cannot post IP via WiFi")
             return False
 
+
         url = f"http://{phone_ip}:{self.PHONE_PORT}/device_ip"
         self._ip_retry_stop.clear()
+
 
         print(
             f"[WIFI] Starting IP retry loop → {url} "
             f"(up to {max_attempts} attempts every {retry_interval}s)"
         )
 
+
         for attempt in range(1, max_attempts + 1):
             if self._ip_retry_stop.is_set():
                 print("[WIFI] IP retry loop cancelled")
                 return False
+
 
             try:
                 resp = reqlib.post(
@@ -300,18 +328,24 @@ class WiFiManager:
                 else:
                     print(f"[WIFI] HTTP {resp.status_code} attempt {attempt} — retrying in {retry_interval}s")
 
+
             except Exception as e:
                 print(f"[WIFI] POST attempt {attempt} failed: {e} — retrying in {retry_interval}s")
 
+
             self._ip_retry_stop.wait(timeout=retry_interval)
+
 
         print(f"[WIFI] ✗ IP POST failed after {max_attempts} attempts")
         return False
 
+
     def stop_ip_retry(self):
         self._ip_retry_stop.set()
 
+
     # ── Flask Server (Pi-side, port 8765) ──────────────────────────────────
+
 
     def start_server(self):
         if self._flask_server is not None:
@@ -330,16 +364,20 @@ class WiFiManager:
         else:
             print(f"[WIFI] WARNING: Flask server did not start within 8s")
 
+
     def _run_flask(self):
         from flask import Flask, request, jsonify, Response
         from werkzeug.serving import make_server
         import socket as _socket
 
+
         app = Flask(__name__)
+
 
         @app.route('/ping', methods=['GET'])
         def ping():
             return jsonify(status='ok', device='minik')
+
 
         @app.route('/status', methods=['GET'])
         def status():
@@ -355,6 +393,7 @@ class WiFiManager:
             except Exception:
                 return jsonify(status='ok', device='minik')
 
+
         @app.route('/snapshot', methods=['GET'])
         def snapshot():
             with WiFiManager._frame_lock:
@@ -362,6 +401,7 @@ class WiFiManager:
             if frame:
                 return Response(frame, mimetype='image/jpeg')
             return Response(status=204)
+
 
         @app.route('/result/<result_type>', methods=['POST'])
         def receive_result(result_type):
@@ -376,6 +416,7 @@ class WiFiManager:
                     self._result_events[result_type].set()
             return jsonify(status='received')
 
+
         try:
             server = make_server('0.0.0.0', self.FLASK_PORT, app)
             server.socket.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
@@ -387,21 +428,28 @@ class WiFiManager:
             print(f"[WIFI] SERVER Failed to bind port {self.FLASK_PORT}: {e}")
             print(f"[WIFI] SERVER Try: sudo fuser -k {self.FLASK_PORT}/tcp")
 
+
     # ── Send Image (Pi → Phone) ────────────────────────────────────────────
+
 
     def send_image(self, image_path: str) -> bool:
         if not HAS_REQUESTS:
             print("[WIFI] requests not available — cannot send image")
             return False
 
+        print(f"[WIFI] Preparing to send image: {image_path}")  # ← NEW
+
         url      = self._build_phone_url('upload/image')
         ping_url = self._build_phone_url('ping')
         if not url or not ping_url:
+            print(f"[WIFI] Cannot build phone URL — url={url} ping_url={ping_url}")  # ← FIX
             return False
+
 
         if not self._wait_for_phone_server(ping_url, timeout=15):
             print("[WIFI] Phone server unreachable — aborting image send")
             return False
+
 
         try:
             with open(image_path, 'rb') as f:
@@ -410,9 +458,11 @@ class WiFiManager:
             print(f"[WIFI] Could not read image file: {e}")
             return False
 
+
         with self._results_lock:
             self._results.pop('cnn_result', None)
             self._result_events['cnn_result'].clear()
+
 
         for attempt in range(1, 4):
             try:
@@ -441,19 +491,25 @@ class WiFiManager:
             if attempt < 3:
                 time.sleep(2)
 
+
         print("[WIFI] Image send failed after 3 attempts")
         return False
 
+
     # ── Send CSV (Pi → Phone) ──────────────────────────────────────────────
+
 
     def send_file(self, filepath: str) -> bool:
         if not HAS_REQUESTS:
             print("[WIFI] requests not available — cannot send CSV")
             return False
 
+
         url = self._build_phone_url('upload/csv')
         if not url:
+            print(f"[WIFI] Cannot build CSV URL — phone IP unknown")  # ← FIX (same pattern)
             return False
+
 
         try:
             with open(filepath, 'rb') as f:
@@ -462,9 +518,11 @@ class WiFiManager:
             print(f"[WIFI] Could not read CSV file: {e}")
             return False
 
+
         with self._results_lock:
             self._results.pop('ml_result', None)
             self._result_events['ml_result'].clear()
+
 
         fname = os.path.basename(filepath)
         for attempt in range(1, 4):
@@ -486,10 +544,13 @@ class WiFiManager:
             if attempt < 3:
                 time.sleep(2)
 
+
         print("[WIFI] CSV send failed after 3 attempts")
         return False
 
+
     # ── Wait for Results ───────────────────────────────────────────────────
+
 
     def wait_for_cnn_result(self, cancel_event=None, timeout: int = 120):
         print(f"[WIFI] Waiting for CNN result (timeout {timeout}s)...")
@@ -511,6 +572,7 @@ class WiFiManager:
         print("[WIFI] CNN result wait timed out")
         return None
 
+
     def wait_for_ml_result(self, cancel_event=None, timeout: int = 60):
         print(f"[WIFI] Waiting for ML result (timeout {timeout}s)...")
         with self._results_lock:
@@ -531,6 +593,7 @@ class WiFiManager:
         print("[WIFI] ML result wait timed out")
         return None
 
+
     def wait_for_message(self, message_type: str, timeout: int = 120):
         if message_type == 'cnn_result':
             return self.wait_for_cnn_result(timeout=timeout)
@@ -539,7 +602,9 @@ class WiFiManager:
         print(f"[WIFI] Unknown message type: {message_type}")
         return None
 
+
     # ── Phone Server Readiness ─────────────────────────────────────────────
+
 
     def _wait_for_phone_server(self, url: str, timeout: int = 15) -> bool:
         print(f"[WIFI] Waiting for phone server (up to {timeout}s)...")
@@ -556,7 +621,9 @@ class WiFiManager:
         print("[WIFI] Phone server did not respond in time")
         return False
 
+
     # ── URL Builder ────────────────────────────────────────────────────────
+
 
     def _build_phone_url(self, endpoint: str) -> str | None:
         phone_ip = self.get_phone_ip()
@@ -567,7 +634,9 @@ class WiFiManager:
         print(f"[WIFI] Target URL: {url}")
         return url
 
+
     # ── Stop ───────────────────────────────────────────────────────────────
+
 
     def stop(self):
         self.stop_ip_retry()
